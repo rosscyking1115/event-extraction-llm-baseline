@@ -1,0 +1,174 @@
+"""
+WikiEvents zero-shot baseline using Qwen2.5-7B-Instruct.
+Predicts trigger word and full event type (Category.SubType.Specificity).
+Evaluates using exact match on trigger, type, and both.
+"""
+
+import json
+import re
+import time
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+
+# ── Config ──────────────────────────────────────────────────────────────────
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+DATA_FILE  = "/mnt/parscratch/users/acp25ck/team-rg1/data/wikievents/dev.jsonl"
+OUT_FILE   = "/mnt/parscratch/users/acp25ck/team-rg1/results/wikievents_qwen_eval_results.jsonl"
+MAX_DOCS   = 50   # number of *documents* to evaluate (each may have multiple events)
+MAX_NEW_TOKENS = 100
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def get_sentence_text(doc, sent_idx):
+    return doc['sentences'][sent_idx][1]
+
+def build_prompt(sentence: str) -> str:
+    return (
+        "You are an event extraction system.\n"
+        "Given a sentence, identify the main event trigger word and classify its event type.\n\n"
+        "Event types follow a three-level hierarchy, for example:\n"
+        "  Life.Die.Unspecified\n"
+        "  Conflict.Attack.Unspecified\n"
+        "  Movement.Transportation.Unspecified\n"
+        "  Cognitive.IdentifyCategorize.Unspecified\n\n"
+        f"Sentence: {sentence}\n\n"
+        "Respond with ONLY a valid JSON object with exactly two fields:\n"
+        '  {"trigger": "<trigger word>", "event_type": "<Category.SubType.Specificity>"}\n\n'
+        "JSON:"
+    )
+
+def extract_json(text: str):
+    """Try to parse JSON from model output."""
+    text = text.strip()
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Try to find first JSON-like block
+    match = re.search(r'\{.*?\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except Exception:
+            pass
+    return None
+
+# ── Load model ───────────────────────────────────────────────────────────────
+print(f"Loading model: {MODEL_NAME}")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.float16,
+    device_map="auto",
+    trust_remote_code=True
+)
+model.eval()
+print("Model loaded.\n")
+
+# ── Load data ─────────────────────────────────────────────────────────────────
+print(f"Loading data from: {DATA_FILE}")
+docs = []
+with open(DATA_FILE) as f:
+    for line in f:
+        docs.append(json.loads(line.strip()))
+docs = docs[:MAX_DOCS]
+
+# Flatten to (doc_id, sentence, gold_trigger, gold_type)
+samples = []
+for doc in docs:
+    for em in doc['event_mentions']:
+        sent_idx = em['trigger']['sent_idx']
+        try:
+            sent_text = get_sentence_text(doc, sent_idx)
+        except (IndexError, KeyError):
+            continue
+        samples.append({
+            'doc_id':       doc['doc_id'],
+            'sentence':     sent_text,
+            'gold_trigger': em['trigger']['text'].lower().strip(),
+            'gold_type':    em['event_type'].strip(),
+        })
+
+print(f"Documents: {len(docs)} → Event mentions to evaluate: {len(samples)}\n")
+
+# ── Inference ─────────────────────────────────────────────────────────────────
+results = []
+valid_json   = 0
+trigger_correct = 0
+type_correct    = 0
+both_correct    = 0
+
+for i, sample in enumerate(samples):
+    prompt = build_prompt(sample['sentence'])
+
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=MAX_NEW_TOKENS,
+            do_sample=False,
+            temperature=1.0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    # Decode only the newly generated tokens
+    new_tokens = output_ids[0][inputs['input_ids'].shape[1]:]
+    raw_output = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+    parsed = extract_json(raw_output)
+    is_valid = parsed is not None and 'trigger' in parsed and 'event_type' in parsed
+
+    pred_trigger = parsed['trigger'].lower().strip() if is_valid else ""
+    pred_type    = parsed['event_type'].strip()      if is_valid else ""
+
+    t_correct = pred_trigger == sample['gold_trigger']
+    y_correct = pred_type    == sample['gold_type']
+    b_correct = t_correct and y_correct
+
+    if is_valid:    valid_json += 1
+    if t_correct:   trigger_correct += 1
+    if y_correct:   type_correct += 1
+    if b_correct:   both_correct += 1
+
+    result = {
+        'doc_id':         sample['doc_id'],
+        'sentence':       sample['sentence'][:200],
+        'gold_trigger':   sample['gold_trigger'],
+        'gold_type':      sample['gold_type'],
+        'pred_trigger':   pred_trigger,
+        'pred_type':      pred_type,
+        'raw_output':     raw_output,
+        'valid_json':     is_valid,
+        'trigger_correct': t_correct,
+        'type_correct':    y_correct,
+        'both_correct':    b_correct,
+    }
+    results.append(result)
+
+    n = i + 1
+    print(
+        f"[{n:4d}/{len(samples)}]  "
+        f"gold=({sample['gold_trigger']!r}, {sample['gold_type']})  "
+        f"pred=({pred_trigger!r}, {pred_type})  "
+        f"T={int(t_correct)} Y={int(y_correct)}"
+    )
+
+# ── Save results ──────────────────────────────────────────────────────────────
+import os
+os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
+with open(OUT_FILE, 'w') as f:
+    for r in results:
+        f.write(json.dumps(r) + '\n')
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+n = len(results)
+print("\n" + "="*60)
+print("WIKIEVENTS ZERO-SHOT BASELINE — RESULTS")
+print("="*60)
+print(f"Documents evaluated:        {len(docs)}")
+print(f"Event mentions evaluated:   {n}")
+print(f"Valid JSON rate:             {valid_json}/{n} = {valid_json/n:.3f}")
+print(f"Trigger exact match acc:    {trigger_correct}/{n} = {trigger_correct/n:.3f}")
+print(f"Type exact match acc:       {type_correct}/{n} = {type_correct/n:.3f}")
+print(f"Trigger+Type exact match:   {both_correct}/{n} = {both_correct/n:.3f}")
+print(f"\nResults saved to: {OUT_FILE}")
