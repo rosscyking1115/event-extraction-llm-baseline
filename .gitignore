@@ -1,0 +1,26 @@
+# Large data files - stay on parscratch only
+data/
+
+# Model cache
+cache/
+
+# HuggingFace cache
+*.h5
+*.bin
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs we don't want to track
+outputs/
+*.log
