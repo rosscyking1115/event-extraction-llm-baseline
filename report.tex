@@ -208,7 +208,35 @@ A clear pattern emerges: \texttt{Conflict.Attack} types score highest (0.439--0.
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Error Analysis}
 
-\subsection{Error Categories}
+\subsection{MAVEN Error Analysis}
+
+Table~\ref{tab:maven_errors} shows the error breakdown for both MAVEN conditions.
+
+\begin{table}[h]
+\centering
+\caption{Error category breakdown — MAVEN ($n=50$ per condition).}
+\label{tab:maven_errors}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Error Category} & \multicolumn{2}{c}{\textbf{Unconstrained}} & \multicolumn{2}{c}{\textbf{Constrained}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & Count & \% & Count & \% \\
+\midrule
+Correct (trigger + type)     &  0 &  0.0\% &  5 & 10.0\% \\
+Right trigger, wrong type    &  8 & 16.0\% &  6 & 12.0\% \\
+Wrong trigger, right type    &  0 &  0.0\% &  9 & 18.0\% \\
+Wrong trigger, wrong type    & 42 & 84.0\% & 30 & 60.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The most striking finding in the unconstrained condition is that type accuracy is exactly 0.000 — not because the model fails to understand event semantics, but because it \textit{never uses MAVEN's ontology labels}. Instead it generates its own vocabulary: \texttt{natural\_disaster}, \texttt{Natural Disaster}, \texttt{tectonic}, and in two cases the Chinese equivalent \texttt{自然灾害}. Without knowledge of the exact label strings, the model produces semantically reasonable but benchmark-incompatible outputs.
+
+Constraining the label space transforms the error distribution substantially. The ``wrong trigger, right type'' category jumps from 0.0\% to 18.0\%, indicating that label constraints successfully guide type classification even in cases where trigger selection fails. The dominant error category (wrong trigger, wrong type) drops from 84.0\% to 60.0\%, confirming that much of MAVEN's difficulty in the unconstrained condition is ontology vocabulary mismatch rather than genuine semantic failure.
+
+The top type confusions in the constrained condition reflect the domain of the evaluated sample (earthquake/tsunami events): \texttt{Causation} $\rightarrow$ \texttt{Catastrophe} (3 cases) and \texttt{Destroying} $\rightarrow$ \texttt{Catastrophe} (2 cases) are both plausible labellings of the same physical events, highlighting the difficulty of MAVEN's fine-grained ontology distinctions.
+
+\subsection{WikiEvents Error Categories}
 
 Table~\ref{tab:errors} categorises all predictions from the WikiEvents constrained condition. Errors are classified by whether the trigger word and each level of the event type hierarchy are correct.
 
