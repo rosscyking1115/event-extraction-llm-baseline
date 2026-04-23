@@ -39,20 +39,27 @@ def load_results(filepath):
                 rows.append(json.loads(line))
     return rows
 
+def get_field(row, *candidates):
+    """Return the first matching field name found in row (handles schema differences)."""
+    for key in candidates:
+        if key in row:
+            return row[key]
+    return False
+
 def compute_metrics(rows):
     n = len(rows)
     if n == 0:
         return None
-    valid     = sum(1 for r in rows if r.get('valid_json', False))
-    trigger   = sum(1 for r in rows if r.get('trigger_correct', False))
-    type_acc  = sum(1 for r in rows if r.get('type_correct', False))
-    both      = sum(1 for r in rows if r.get('both_correct', False))
+    valid    = sum(1 for r in rows if get_field(r, 'valid_json'))
+    trigger  = sum(1 for r in rows if get_field(r, 'trigger_correct', 'trigger_match'))
+    type_acc = sum(1 for r in rows if get_field(r, 'type_correct', 'type_match'))
+    both     = sum(1 for r in rows if get_field(r, 'both_correct', 'both_match'))
     return {
-        "n":        n,
-        "valid":    valid / n,
-        "trigger":  trigger / n,
-        "type":     type_acc / n,
-        "both":     both / n,
+        "n":       n,
+        "valid":   valid / n,
+        "trigger": trigger / n,
+        "type":    type_acc / n,
+        "both":    both / n,
     }
 
 # ── Print table ───────────────────────────────────────────────────────────────
