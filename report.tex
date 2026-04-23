@@ -1,0 +1,384 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{multirow}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+
+\title{\textbf{Zero-Shot Event Extraction with Large Language Models:\\
+A Baseline Study on MAVEN and WikiEvents}}
+
+\author{
+    Ross Feng\\
+    \small University of Sheffield\\
+    \small \texttt{acp25ck@sheffield.ac.uk}
+}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We evaluate whether a large language model (LLM) can perform event extraction with no task-specific training, using structured prompt engineering alone. Using \textbf{Qwen2.5-7B-Instruct}, we run zero-shot inference on two benchmarks: MAVEN, a large-scale event detection dataset, and WikiEvents (NAACL 2021), a richer document-level event extraction benchmark. We compare two prompting strategies — unconstrained zero-shot and constrained-label zero-shot — measuring exact-match accuracy on trigger word and event type prediction. Our results show that constrained prompting consistently improves type accuracy, but multi-event sentence ambiguity and hierarchical ontology misalignment remain the dominant failure modes. All code and results are available at \url{https://github.com/rosscyking1115/event-extraction-llm-baseline}.
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+Event extraction is the task of identifying event triggers and their types in natural language text. Traditional approaches rely on supervised models trained on annotated corpora~\cite{ahn2006stages,li2013joint}. With the advent of capable instruction-tuned LLMs, an important question arises: \textit{can a general-purpose LLM perform event extraction without any task-specific fine-tuning?}
+
+This report presents a systematic zero-shot LLM baseline for event extraction. We investigate two core questions:
+\begin{enumerate}
+    \item How accurately can Qwen2.5-7B-Instruct identify event triggers and types with no in-context examples?
+    \item Does providing the model with a constrained list of valid event types improve accuracy, and by how much?
+\end{enumerate}
+
+We experiment on two datasets of increasing complexity: MAVEN~\cite{wang2020maven}, which focuses on event detection, and WikiEvents~\cite{li2021document}, which includes richer event argument structure and a three-level type hierarchy. Across four experiments, we find that constrained prompting provides meaningful improvements, particularly on type classification, but that trigger selection under multi-event ambiguity remains a hard problem for zero-shot LLMs.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Background and Related Work}
+
+\subsection{Event Extraction}
+
+Event extraction encompasses two subtasks: \textit{trigger detection} (identifying the word or phrase that most clearly expresses an event) and \textit{event classification} (assigning the trigger to a predefined event type from an ontology). Full event extraction additionally requires identifying \textit{event arguments} — the entities involved in each event and their roles.
+
+Early systems used feature-based classifiers~\cite{ahn2006stages}. Neural approaches improved substantially~\cite{nguyen2015event,yang2019exploring}, and recent work uses generative models for end-to-end extraction~\cite{li2021document,lu2021text2event}.
+
+\subsection{Zero-Shot LLMs for IE}
+
+Several recent works have explored zero-shot and few-shot prompting for information extraction tasks~\cite{wei2023zero,ma2023large}. These studies generally find that LLMs perform well on high-level classification but struggle with fine-grained ontology alignment and exact span matching — findings that are consistent with our results.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Datasets}
+
+\subsection{MAVEN}
+
+MAVEN~\cite{wang2020maven} is a large-scale event detection dataset covering 168 event types from Wikipedia documents. Each instance is a sentence containing one or more event triggers. We use the training split for evaluation, randomly sampling 50 instances.
+
+\textbf{Why MAVEN may understate model capability:} MAVEN is primarily an event detection benchmark and does not include full argument structure. Many sentences contain multiple plausible triggers, making exact-match evaluation difficult. We use MAVEN as a starting baseline and transition to WikiEvents for richer evaluation.
+
+\subsection{WikiEvents}
+
+WikiEvents~\cite{li2021document} is the standard benchmark for document-level event extraction from the NAACL 2021 paper \textit{Document-Level Event Argument Extraction by Conditional Generation}. It contains 246 annotated documents across a three-level ontology with 49 unique event types. We evaluate on the development split (20 documents, 345 event mentions).
+
+Key statistics for the development split are shown in Table~\ref{tab:wikievents_stats}.
+
+\begin{table}[h]
+\centering
+\caption{WikiEvents development split statistics.}
+\label{tab:wikievents_stats}
+\begin{tabular}{lr}
+\toprule
+\textbf{Statistic} & \textbf{Value} \\
+\midrule
+Documents & 20 \\
+Event mentions & 345 \\
+Events with arguments & 291 (84.5\%) \\
+Total arguments & 484 \\
+Unique full event types & 49 \\
+Top-level categories & 13 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+WikiEvents event types follow a three-level hierarchy (e.g.\ \texttt{Conflict.Attack.DetonateExplode}), making type classification substantially harder than MAVEN's flat label space.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Methodology}
+
+\subsection{Model}
+
+We use \textbf{Qwen/Qwen2.5-7B-Instruct}~\cite{qwen2025}, an open-weight instruction-tuned language model with 7 billion parameters. Inference runs on a single NVIDIA A100-SXM4-80GB GPU (Sheffield Stanage HPC) in \texttt{float16} precision with greedy decoding. No fine-tuning is performed.
+
+\subsection{Task Formulation}
+
+For each event mention, we extract the containing sentence and prompt the model to output a JSON object with two fields:
+\begin{itemize}
+    \item \texttt{trigger}: the word or phrase most clearly expressing the event
+    \item \texttt{event\_type}: the event type label (flat for MAVEN; three-level hierarchy for WikiEvents)
+\end{itemize}
+
+\subsection{Prompting Strategies}
+
+We compare two prompting strategies:
+
+\textbf{Unconstrained zero-shot:} The prompt explains the output format and shows example type hierarchies but does not enumerate valid labels. The model must generate event types freely.
+
+\textbf{Constrained-label zero-shot:} The prompt explicitly lists all valid event type labels. The model is instructed to select only from this list. For WikiEvents, all 49 labels are included.
+
+The WikiEvents constrained prompt structure is:
+\begin{quote}
+\small
+\textit{You are an event extraction system. Given a sentence, identify the main event trigger word and classify its event type. You MUST choose the event\_type from ONLY this list: [49 types listed]. Sentence: \{sentence\}. Respond with ONLY a valid JSON object...}
+\end{quote}
+
+\subsection{Evaluation}
+
+We evaluate using \textbf{exact-match accuracy} on three metrics:
+\begin{itemize}
+    \item \textbf{Trigger accuracy}: predicted trigger word equals gold trigger (case-insensitive)
+    \item \textbf{Type accuracy}: predicted event type exactly matches gold label
+    \item \textbf{Both accuracy}: both trigger and type are simultaneously correct
+\end{itemize}
+
+We deliberately avoid BERTScore and other semantic similarity metrics. Event extraction requires ontology-correct labels — a prediction of \texttt{Life.Injure} when the gold is \texttt{Life.Die} is wrong regardless of semantic proximity, and semantic similarity scores would unfairly reward such errors.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} presents exact-match accuracy across all four experiments.
+
+\begin{table}[h]
+\centering
+\caption{Main results across all experiments. All metrics are exact-match accuracy.}
+\label{tab:main_results}
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Dataset} & \textbf{Prompt} & \textbf{Samples} & \textbf{Trigger} & \textbf{Type} & \textbf{Both} \\
+\midrule
+MAVEN       & Unconstrained & 50  & 0.160 & 0.000 & 0.000 \\
+MAVEN       & Constrained   & 50  & 0.220 & 0.280 & 0.100 \\
+\midrule
+WikiEvents  & Unconstrained & 345 & 0.272 & 0.128 & 0.067 \\
+WikiEvents  & Constrained   & 345 & 0.264 & 0.186 & 0.113 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Effect of Constrained Prompting}
+
+Constrained prompting consistently improves type accuracy. On MAVEN, type accuracy improves from 0.000 to 0.280 — a large jump explained by the flat label space: without constraints the model frequently produces semantically plausible but ontology-incompatible types. On WikiEvents, the improvement is more modest (0.128 → 0.186), reflecting two factors: the harder three-level hierarchy and incomplete label adherence (80.6\% of constrained predictions used a valid label).
+
+Trigger accuracy is largely unaffected by label constraints (MAVEN: 0.160 → 0.220; WikiEvents: 0.272 → 0.264), confirming that trigger selection and type classification are relatively independent challenges.
+
+\subsection{MAVEN vs.\ WikiEvents}
+
+WikiEvents trigger accuracy (0.272) exceeds both MAVEN conditions, likely because WikiEvents documents describe highly salient events (bombings, deaths, arrests) where the trigger word is unambiguous. WikiEvents type accuracy lags behind MAVEN constrained (0.186 vs.\ 0.280), reflecting the substantially harder 49-type three-level ontology.
+
+\subsection{Per-Type Accuracy on WikiEvents}
+
+Table~\ref{tab:pertype} shows per-type accuracy for the WikiEvents constrained condition across the most frequent event types.
+
+\begin{table}[h]
+\centering
+\caption{WikiEvents constrained zero-shot — per-type accuracy (top 10 by frequency).}
+\label{tab:pertype}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Event Type} & \textbf{Total} & \textbf{Correct} & \textbf{Acc} \\
+\midrule
+Conflict.Attack.DetonateExplode        & 66 & 29 & 0.439 \\
+Life.Die.Unspecified                   & 47 &  4 & 0.085 \\
+Conflict.Attack.Unspecified            & 36 & 17 & 0.472 \\
+Life.Injure.Unspecified                & 25 &  0 & 0.000 \\
+Contact.Contact.Unspecified            & 22 &  0 & 0.000 \\
+Movement.Transportation.Unspecified    & 17 &  1 & 0.059 \\
+Contact.Contact.Broadcast              & 14 &  5 & 0.357 \\
+Justice.ArrestJailDetain.Unspecified   & 12 &  1 & 0.083 \\
+GenericCrime.GenericCrime.GenericCrime & 11 &  1 & 0.091 \\
+Transaction.ExchangeBuySell.Unspecified &  6 &  3 & 0.500 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A clear pattern emerges: \texttt{Conflict.Attack} types score highest (0.439--0.500), while \texttt{Life.Injure}, \texttt{Contact.Contact}, and \texttt{Movement} types score near zero.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Error Analysis}
+
+\subsection{Error Categories}
+
+Table~\ref{tab:errors} categorises all predictions from the WikiEvents constrained condition. Errors are classified by whether the trigger word and each level of the event type hierarchy are correct.
+
+\begin{table}[h]
+\centering
+\caption{Error category breakdown — WikiEvents constrained zero-shot ($n=345$).}
+\label{tab:errors}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Error Category} & \textbf{Count} & \textbf{\%} \\
+\midrule
+Correct (trigger + type)                        & 39  & 11.3\% \\
+Right trigger, right Cat.Sub, wrong Specificity & 16  &  4.6\% \\
+Right trigger, right Category, wrong SubType    & 13  &  3.8\% \\
+Right trigger, wrong Category entirely          & 23  &  6.7\% \\
+Wrong trigger, right type                       & 25  &  7.2\% \\
+Wrong trigger, right Cat.Sub                    & 15  &  4.3\% \\
+Wrong trigger, right Category, wrong SubType    & 22  &  6.4\% \\
+Wrong trigger, wrong Category entirely          & 192 & 55.7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dominant error category is \textit{wrong trigger, wrong category entirely} (55.7\%), indicating that the model's primary failure mode is not subtle ontology misalignment but rather selecting a fundamentally different event within the same sentence.
+
+\subsection{Effect of Constraining on Error Distribution}
+
+Compared to unconstrained prompting, constraining labels halves the ``right trigger, wrong category'' error rate (15.4\% → 6.7\%). This confirms that label constraints provide meaningful ontology alignment. However, the most frequent error category (wrong trigger + wrong category) shifts only marginally (57.4\% → 55.7\%), indicating that this core failure is driven by trigger selection rather than type knowledge.
+
+\subsection{Type Confusions}
+
+The most frequent type confusions reveal a systematic pattern: the model conflates \textit{consequence} events with \textit{cause} events. Table~\ref{tab:confusions} shows the top confusions.
+
+\begin{table}[h]
+\centering
+\caption{Top type confusions (gold $\rightarrow$ predicted), WikiEvents constrained.}
+\label{tab:confusions}
+\begin{tabular}{llr}
+\toprule
+\textbf{Gold Type} & \textbf{Predicted Type} & \textbf{Count} \\
+\midrule
+Life.Die.Unspecified       & Conflict.Attack.DetonateExplode & 14 \\
+Life.Die.Unspecified       & Conflict.Attack.Unspecified     & 12 \\
+Life.Injure.Unspecified    & Life.Injure                     &  8 \\
+Life.Die.Unspecified       & Life.Injure                     &  7 \\
+Conflict.Attack.DetonateExplode & Conflict.Attack.Unspecified &  6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The most frequent confusion (Life.Die → Conflict.Attack.DetonateExplode, 14 cases) is explained by multi-event sentences: when a bombing kills someone, both events are linguistically present. The model attaches to the more physically salient explosion event rather than the death consequence. Eight cases of Life.Injure.Unspecified → Life.Injure indicate a \textit{format failure} rather than a semantic failure: the model predicts the correct category and subtype but drops the required third level of the hierarchy.
+
+\subsection{Qualitative Examples}
+
+\textbf{Multi-event confusion (dominant failure):}
+\begin{quote}
+\small
+\textit{Sentence:} ``Roadside IED kills Russian major general in Syria''\\
+\textit{Gold:} trigger=\texttt{kills}, type=\texttt{Life.Die.Unspecified}\\
+\textit{Predicted:} trigger=\texttt{kills}, type=\texttt{Conflict.Attack.DetonateExplode}
+\end{quote}
+The trigger is correct, but the model classifies the overall event as an attack rather than a death — plausible given the sentence content but ontologically wrong.
+
+\textbf{Trigger selection under ambiguity:}
+\begin{quote}
+\small
+\textit{Sentence:} ``Russia's Defense Ministry confirmed that a major general was killed in Syria by an IED...''\\
+\textit{Gold:} trigger=\texttt{killed}, type=\texttt{Life.Die.Unspecified}\\
+\textit{Predicted:} trigger=\texttt{confirmed}, type=\texttt{Contact.Contact.Broadcast}
+\end{quote}
+The model selects \texttt{confirmed} as the trigger, anchoring on the reporting verb rather than the actual event being described — a common failure mode in news-domain text.
+
+\textbf{Correct prediction:}
+\begin{quote}
+\small
+\textit{Sentence:} ``A local commander of Syria's National Defense Forces was also reportedly killed.''\\
+\textit{Gold:} trigger=\texttt{killed}, type=\texttt{Life.Die.Unspecified}\\
+\textit{Predicted:} trigger=\texttt{killed}, type=\texttt{Life.Die.Unspecified} ✓
+\end{quote}
+Single-event sentences with unambiguous triggers are reliably extracted.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{What Zero-Shot LLMs Can Do}
+
+Our results demonstrate that Qwen2.5-7B-Instruct can perform meaningful zero-shot event extraction. JSON output validity is perfect across all experiments (345/345), showing reliable instruction-following. Trigger accuracy reaches 0.272 on WikiEvents without any examples, comparable to weak supervised baselines from earlier work. The model shows genuine understanding of event semantics, as evidenced by the semantic proximity of its trigger errors (e.g.\ \textit{injured} → \textit{killed}).
+
+\subsection{Where Zero-Shot LLMs Struggle}
+
+Three failure modes account for most errors:
+
+\textbf{Multi-event sentence ambiguity.} News text routinely describes multiple co-occurring events. The model consistently selects the most salient event in the sentence rather than the gold-annotated one. This is an inherent limitation of sentence-level prompting for document-level annotations.
+
+\textbf{Ontology misalignment.} Even with constrained prompting, 19.4\% of WikiEvents predictions used types outside the provided label list. The three-level hierarchy is harder to constrain than a flat label space.
+
+\textbf{Hierarchical format adherence.} Eight cases of Life.Injure.Unspecified → Life.Injure suggest the model drops the third hierarchy level, indicating that longer, structured label strings require more explicit format enforcement in the prompt.
+
+\subsection{Implications}
+
+These results establish a clear zero-shot baseline against which fine-tuned or few-shot approaches can be compared. The gap between unconstrained and constrained accuracy (particularly on type classification) suggests that prompt engineering alone can recover substantial performance. However, the dominance of the multi-event confusion error class (55.7\%) suggests that sentence-level prompting is fundamentally limited for document-annotated benchmarks like WikiEvents.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We presented a zero-shot LLM baseline for event extraction using Qwen2.5-7B-Instruct on MAVEN and WikiEvents. Key findings:
+
+\begin{itemize}
+    \item Constrained-label prompting consistently improves type accuracy (MAVEN: 0.000 → 0.280; WikiEvents: 0.128 → 0.186)
+    \item Trigger accuracy is stronger on WikiEvents (0.272) than MAVEN (0.160), likely due to more salient event types
+    \item The dominant failure mode is multi-event sentence ambiguity, accounting for 55.7\% of all errors
+    \item Hierarchical ontologies are harder to constrain than flat label spaces, with 19.4\% of predictions falling outside the provided label set
+\end{itemize}
+
+Future work could explore few-shot prompting, document-level context, or fine-tuned models to address the multi-event ambiguity problem identified here.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+
+\bibitem{ahn2006stages}
+D.\ Ahn.
+\newblock The stages of event extraction.
+\newblock In \textit{Proceedings of the Workshop on Annotating and Reasoning about Time and Events}, 2006.
+
+\bibitem{li2021document}
+S.\ Li, H.\ Ji, and J.\ Han.
+\newblock Document-level event argument extraction by conditional generation.
+\newblock In \textit{Proceedings of NAACL}, 2021.
+
+\bibitem{li2013joint}
+Q.\ Li and H.\ Ji.
+\newblock Incremental joint extraction of entity mentions and relations.
+\newblock In \textit{Proceedings of ACL}, 2013.
+
+\bibitem{lu2021text2event}
+Y.\ Lu et al.
+\newblock Text2Event: Controllable sequence-to-structure generation for end-to-end event extraction.
+\newblock In \textit{Proceedings of ACL}, 2021.
+
+\bibitem{ma2023large}
+Y.\ Ma et al.
+\newblock Large language model is not a good few-shot information extractor, but a good reranker for hard samples!
+\newblock In \textit{Findings of EMNLP}, 2023.
+
+\bibitem{nguyen2015event}
+T.\ H.\ Nguyen and R.\ Grishman.
+\newblock Event detection and domain adaptation with convolutional neural networks.
+\newblock In \textit{Proceedings of ACL}, 2015.
+
+\bibitem{qwen2025}
+Qwen Team.
+\newblock Qwen2.5: A party of foundation models.
+\newblock \textit{arXiv preprint arXiv:2412.15115}, 2025.
+
+\bibitem{wang2020maven}
+X.\ Wang et al.
+\newblock MAVEN: A massive general domain event detection dataset.
+\newblock In \textit{Proceedings of EMNLP}, 2020.
+
+\bibitem{wei2023zero}
+X.\ Wei et al.
+\newblock Zero-shot information extraction via chatting with ChatGPT.
+\newblock \textit{arXiv preprint arXiv:2302.10205}, 2023.
+
+\bibitem{yang2019exploring}
+S.\ Yang and K.\ Mitchel.
+\newblock Exploring pre-trained language models for event extraction and generation.
+\newblock In \textit{Proceedings of ACL}, 2019.
+
+\end{thebibliography}
+
+\end{document}
