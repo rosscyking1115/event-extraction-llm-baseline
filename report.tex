@@ -39,7 +39,7 @@ A Baseline Study on MAVEN and WikiEvents}}
 \maketitle
 
 \begin{abstract}
-We evaluate whether a large language model (LLM) can perform event extraction with no task-specific training, using structured prompt engineering alone. Using \textbf{Qwen2.5-7B-Instruct}, we run zero-shot inference on two benchmarks: MAVEN, a large-scale event detection dataset, and WikiEvents (NAACL 2021), a richer document-level event extraction benchmark. We compare two prompting strategies — unconstrained zero-shot and constrained-label zero-shot — measuring exact-match accuracy on trigger word and event type prediction. Our results show that constrained prompting consistently improves type accuracy, but multi-event sentence ambiguity and hierarchical ontology misalignment remain the dominant failure modes. All code and results are available at \url{https://github.com/rosscyking1115/event-extraction-llm-baseline}.
+We evaluate whether large language models (LLMs) can perform event extraction with no task-specific training, using structured prompt engineering alone. Using \textbf{Qwen2.5-7B-Instruct} and \textbf{Llama-3.1-8B-Instruct}, we run zero-shot and few-shot inference on two benchmarks: MAVEN, a large-scale event detection dataset, and WikiEvents (NAACL 2021), a richer document-level event extraction benchmark. We compare six experimental conditions across three prompting strategies and two model families, evaluating with exact match, fuzzy string matching (Levenshtein distance), hierarchical partial credit, and micro/macro F1. Results show that constrained-label prompting and few-shot examples both improve type classification substantially, and that Llama-3.1-8B outperforms Qwen2.5-7B on all metrics despite identical parameter count. Multi-event sentence ambiguity and ontology misalignment remain the dominant failure modes across all conditions. All code, results, and slot-level evaluation templates are available at \url{https://github.com/rosscyking1115/event-extraction-llm-baseline}.
 \end{abstract}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -47,13 +47,14 @@ We evaluate whether a large language model (LLM) can perform event extraction wi
 
 Event extraction is the task of identifying event triggers and their types in natural language text. Traditional approaches rely on supervised models trained on annotated corpora~\cite{ahn2006stages,li2013joint}. With the advent of capable instruction-tuned LLMs, an important question arises: \textit{can a general-purpose LLM perform event extraction without any task-specific fine-tuning?}
 
-This report presents a systematic zero-shot LLM baseline for event extraction. We investigate two core questions:
+This report presents a systematic LLM baseline study for event extraction. We investigate three core questions:
 \begin{enumerate}
-    \item How accurately can Qwen2.5-7B-Instruct identify event triggers and types with no in-context examples?
-    \item Does providing the model with a constrained list of valid event types improve accuracy, and by how much?
+    \item How accurately can instruction-tuned LLMs identify event triggers and types with no in-context examples?
+    \item Does providing the model with a constrained label list or few-shot examples improve performance, and by how much?
+    \item Does model family matter — do Qwen2.5-7B and Llama-3.1-8B exhibit different strengths and failure modes?
 \end{enumerate}
 
-We experiment on two datasets of increasing complexity: MAVEN~\cite{wang2020maven}, which focuses on event detection, and WikiEvents~\cite{li2021document}, which includes richer event argument structure and a three-level type hierarchy. Across four experiments, we find that constrained prompting provides meaningful improvements, particularly on type classification, but that trigger selection under multi-event ambiguity remains a hard problem for zero-shot LLMs.
+We experiment on two datasets of increasing complexity: MAVEN~\cite{wang2020maven}, which focuses on event detection, and WikiEvents~\cite{li2021document}, which includes richer event argument structure and a three-level type hierarchy. Across six experimental conditions — including a rule-based majority-class lower bound — we find that constrained prompting and few-shot examples both provide meaningful improvements, that Llama outperforms Qwen despite identical scale, and that multi-event sentence ambiguity is the single largest failure mode regardless of model or prompting strategy.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Background and Related Work}
@@ -106,9 +107,15 @@ WikiEvents event types follow a three-level hierarchy (e.g.\ \texttt{Conflict.At
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Methodology}
 
-\subsection{Model}
+\subsection{Models}
 
-We use \textbf{Qwen/Qwen2.5-7B-Instruct}~\cite{qwen2025}, an open-weight instruction-tuned language model with 7 billion parameters. Inference runs on a single NVIDIA A100-SXM4-80GB GPU (Sheffield Stanage HPC) in \texttt{float16} precision with greedy decoding. No fine-tuning is performed.
+We evaluate two open-weight instruction-tuned models:
+
+\textbf{Qwen2.5-7B-Instruct}~\cite{qwen2025}: 7 billion parameters, trained by Alibaba Cloud with strong multilingual instruction following.
+
+\textbf{Llama-3.1-8B-Instruct}~\cite{llama3}: 8 billion parameters, trained by Meta AI with a different pretraining corpus and instruction tuning pipeline.
+
+Both models run on a single NVIDIA A100-SXM4-80GB GPU (Sheffield Stanage HPC) in \texttt{float16} precision with greedy decoding. No fine-tuning is performed on either model.
 
 \subsection{Task Formulation}
 
@@ -120,90 +127,126 @@ For each event mention, we extract the containing sentence and prompt the model 
 
 \subsection{Prompting Strategies}
 
-We compare two prompting strategies:
+We compare four prompting strategies on WikiEvents and two on MAVEN:
 
 \textbf{Unconstrained zero-shot:} The prompt explains the output format and shows example type hierarchies but does not enumerate valid labels. The model must generate event types freely.
 
-\textbf{Constrained-label zero-shot:} The prompt explicitly lists all valid event type labels. The model is instructed to select only from this list. For WikiEvents, all 49 labels are included.
+\textbf{Constrained-label zero-shot:} The prompt explicitly lists all valid event type labels (49 for WikiEvents, 168 for MAVEN). The model is instructed to select only from this list.
 
-The WikiEvents constrained prompt structure is:
-\begin{quote}
-\small
-\textit{You are an event extraction system. Given a sentence, identify the main event trigger word and classify its event type. You MUST choose the event\_type from ONLY this list: [49 types listed]. Sentence: \{sentence\}. Respond with ONLY a valid JSON object...}
-\end{quote}
+\textbf{Few-shot constrained:} Extends the constrained prompt with three worked examples drawn from the training split, covering Conflict, Life, and Contact event categories. Examples demonstrate the expected trigger and type format.
+
+\textbf{Rule-based majority-class baseline:} Always predicts the most frequent event type from the training split (\texttt{Conflict.Attack.DetonateExplode}) and the most frequent trigger word (\texttt{killed}). This establishes a lower-bound floor against which LLM results are compared.
 
 \subsection{Evaluation}
 
-We evaluate using \textbf{exact-match accuracy} on three metrics:
+We use a multi-level evaluation framework covering exact match, fuzzy match, and F1 scoring.
+
+\textbf{Exact match} is the strictest metric: the predicted string must exactly equal the gold label (case-insensitive). We report exact match for both trigger and type slots.
+
+\textbf{Fuzzy match (Levenshtein similarity)} measures approximate string closeness. The normalised Levenshtein similarity between strings $s_1$ and $s_2$ is:
+\[
+\text{sim}(s_1, s_2) = 1 - \frac{\text{lev}(s_1, s_2)}{\max(|s_1|, |s_2|)}
+\]
+where $\text{lev}$ is the edit distance (number of character insertions, deletions, or substitutions). A fuzzy match is declared when similarity $\geq 0.8$. This captures near-misses such as \textit{killed} vs \textit{kills} (similarity 0.83) that exact match penalises unfairly.
+
+\textbf{Hierarchical partial credit} applies to WikiEvents' three-level type hierarchy. Rather than binary correctness, we award:
 \begin{itemize}
-    \item \textbf{Trigger accuracy}: predicted trigger word equals gold trigger (case-insensitive)
-    \item \textbf{Type accuracy}: predicted event type exactly matches gold label
-    \item \textbf{Both accuracy}: both trigger and type are simultaneously correct
+    \item 1.0 — exact match (\texttt{Life.Die.Unspecified} = \texttt{Life.Die.Unspecified})
+    \item 0.67 — correct Category and SubType (\texttt{Life.Die.*} predicted as \texttt{Life.Die.Unspecified})
+    \item 0.33 — correct Category only (\texttt{Life.*} predicted as \texttt{Life.Die.Unspecified})
+    \item 0.0 — wrong Category entirely
 \end{itemize}
 
-We deliberately avoid BERTScore and other semantic similarity metrics. Event extraction requires ontology-correct labels — a prediction of \texttt{Life.Injure} when the gold is \texttt{Life.Die} is wrong regardless of semantic proximity, and semantic similarity scores would unfairly reward such errors.
+\textbf{Precision, Recall, and F1} are computed per slot. For trigger and type independently:
+\[
+\text{Precision} = \frac{TP}{TP+FP}, \quad \text{Recall} = \frac{TP}{TP+FN}, \quad F_1 = \frac{2 \cdot P \cdot R}{P + R}
+\]
+
+\textbf{Micro F1} aggregates TP, FP, FN counts across all instances before computing F1 — giving more weight to frequent event types.
+
+\textbf{Macro F1} computes F1 per event type class, then averages across all classes — treating rare and frequent types equally. Macro F1 is the more informative metric when the type distribution is skewed.
+
+\textbf{Slot-level evaluation template:} Every prediction is recorded as a structured row with fields for gold and predicted values, Levenshtein similarity, fuzzy match flag, partial credit score, and exact match flag for each slot. Full templates are saved as TSV files in the results directory.
+
+We deliberately avoid BERTScore. Event extraction requires ontology-correct labels — a prediction of \texttt{Life.Injure} when the gold is \texttt{Life.Die} is wrong regardless of semantic proximity, and semantic similarity would unfairly reward such errors.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
 
 \subsection{Main Results}
 
-Table~\ref{tab:main_results} presents exact-match accuracy across all four experiments.
+Table~\ref{tab:main_results} presents the full results across all six experimental conditions using exact match, fuzzy match, and F1 metrics.
 
 \begin{table}[h]
 \centering
-\caption{Main results across all experiments. All metrics are exact-match accuracy.}
+\caption{Main results across all experiments. Trig = trigger slot, Type = event type slot.}
 \label{tab:main_results}
-\begin{tabular}{llcccc}
+\begin{tabular}{llccccccc}
 \toprule
-\textbf{Dataset} & \textbf{Prompt} & \textbf{Samples} & \textbf{Trigger} & \textbf{Type} & \textbf{Both} \\
+\textbf{Model} & \textbf{Condition} & \textbf{N} & \textbf{Trig Exact} & \textbf{Trig Fuzzy} & \textbf{Type Exact} & \textbf{Type PC} & \textbf{Type Macro F1} & \textbf{Both F1} \\
 \midrule
-MAVEN       & Unconstrained & 50  & 0.160 & 0.000 & 0.000 \\
-MAVEN       & Constrained   & 50  & 0.220 & 0.280 & 0.100 \\
+\multicolumn{9}{l}{\textit{MAVEN}} \\
+Qwen-7B & Unconstrained  & 50  & 0.160 & 0.160 & 0.000 & 0.000 & 0.000 & 0.000 \\
+Qwen-7B & Constrained    & 50  & 0.220 & 0.220 & 0.280 & 0.280 & 0.170 & 0.100 \\
 \midrule
-WikiEvents  & Unconstrained & 345 & 0.272 & 0.128 & 0.067 \\
-WikiEvents  & Constrained   & 345 & 0.264 & 0.186 & 0.113 \\
+\multicolumn{9}{l}{\textit{WikiEvents}} \\
+Rule-based & Majority class & 345 & — & — & — & — & — & — \\
+Qwen-7B & Unconstrained  & 345 & 0.272 & 0.281 & 0.128 & 0.200 & 0.043 & 0.067 \\
+Qwen-7B & Constrained    & 345 & 0.264 & 0.272 & 0.186 & 0.279 & 0.079 & 0.113 \\
+Qwen-7B & Few-shot       & 345 & 0.275 & 0.278 & 0.252 & 0.333 & 0.164 & 0.157 \\
+Llama-3.1-8B & Constrained & 345 & 0.330 & 0.348 & 0.293 & 0.367 & 0.143 & 0.197 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Effect of Constrained Prompting}
-
-Constrained prompting consistently improves type accuracy. On MAVEN, type accuracy improves from 0.000 to 0.280 — a large jump explained by the flat label space: without constraints the model frequently produces semantically plausible but ontology-incompatible types. On WikiEvents, the improvement is more modest (0.128 → 0.186), reflecting two factors: the harder three-level hierarchy and incomplete label adherence (80.6\% of constrained predictions used a valid label).
-
-Trigger accuracy is largely unaffected by label constraints (MAVEN: 0.160 → 0.220; WikiEvents: 0.272 → 0.264), confirming that trigger selection and type classification are relatively independent challenges.
-
-\subsection{MAVEN vs.\ WikiEvents}
-
-WikiEvents trigger accuracy (0.272) exceeds both MAVEN conditions, likely because WikiEvents documents describe highly salient events (bombings, deaths, arrests) where the trigger word is unambiguous. WikiEvents type accuracy lags behind MAVEN constrained (0.186 vs.\ 0.280), reflecting the substantially harder 49-type three-level ontology.
-
-\subsection{Per-Type Accuracy on WikiEvents}
-
-Table~\ref{tab:pertype} shows per-type accuracy for the WikiEvents constrained condition across the most frequent event types.
+PC = hierarchical partial credit (0.33/0.67/1.0). Macro F1 averages F1 per event type class. Rule-based baseline results are shown in Table~\ref{tab:rule_baseline}.
 
 \begin{table}[h]
 \centering
-\caption{WikiEvents constrained zero-shot — per-type accuracy (top 10 by frequency).}
-\label{tab:pertype}
-\begin{tabular}{lrrr}
+\caption{Rule-based majority-class baseline on WikiEvents dev ($n=345$).}
+\label{tab:rule_baseline}
+\begin{tabular}{lccc}
 \toprule
-\textbf{Event Type} & \textbf{Total} & \textbf{Correct} & \textbf{Acc} \\
+\textbf{Strategy} & \textbf{Trigger Exact} & \textbf{Type Exact} & \textbf{Both} \\
 \midrule
-Conflict.Attack.DetonateExplode        & 66 & 29 & 0.439 \\
-Life.Die.Unspecified                   & 47 &  4 & 0.085 \\
-Conflict.Attack.Unspecified            & 36 & 17 & 0.472 \\
-Life.Injure.Unspecified                & 25 &  0 & 0.000 \\
-Contact.Contact.Unspecified            & 22 &  0 & 0.000 \\
-Movement.Transportation.Unspecified    & 17 &  1 & 0.059 \\
-Contact.Contact.Broadcast              & 14 &  5 & 0.357 \\
-Justice.ArrestJailDetain.Unspecified   & 12 &  1 & 0.083 \\
-GenericCrime.GenericCrime.GenericCrime & 11 &  1 & 0.091 \\
-Transaction.ExchangeBuySell.Unspecified &  6 &  3 & 0.500 \\
+Always predict \texttt{killed} / \texttt{Conflict.Attack.DetonateExplode} & 0.122 & 0.191 & 0.000 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-A clear pattern emerges: \texttt{Conflict.Attack} types score highest (0.439--0.500), while \texttt{Life.Injure}, \texttt{Contact.Contact}, and \texttt{Movement} types score near zero.
+The rule-based baseline achieves non-trivial type accuracy (0.191) purely from class frequency, but zero joint accuracy. Every LLM condition substantially exceeds this on the combined trigger+type metric, confirming that LLMs add genuine extraction capability beyond majority-class prediction.
+
+\subsection{Effect of Prompting Strategy}
+
+Three prompting effects are visible in the WikiEvents results:
+
+\textbf{Constraining labels improves type accuracy} (unconstrained 0.128 → constrained 0.186). The jump reflects reduced ontology vocabulary mismatch — without constraints, Qwen produces semantically plausible but benchmark-incompatible type strings. Label adherence improved from free-form generation to 80.6\% within the valid label set under constrained prompting.
+
+\textbf{Few-shot examples further improve type accuracy} (constrained 0.186 → few-shot 0.252, +35\% relative). More strikingly, label set adherence jumps from 80.6\% to 97.4\% with examples — showing that worked examples teach the model to follow the ontology format more reliably than the label list alone.
+
+\textbf{Trigger accuracy is largely unaffected by prompting strategy} (range 0.264--0.275 across Qwen WikiEvents conditions). This confirms that trigger selection and type classification are independent problems: prompt constraints help ontology alignment but not event selection under ambiguity.
+
+\subsection{Model Comparison: Qwen-7B vs.\ Llama-3.1-8B}
+
+Llama-3.1-8B outperforms Qwen-7B on every WikiEvents metric under matched conditions (both constrained zero-shot):
+
+\begin{itemize}
+    \item Trigger exact: 0.264 → 0.330 (+25\% relative)
+    \item Type exact: 0.186 → 0.293 (+57\% relative)
+    \item Type partial credit: 0.279 → 0.367 (+32\% relative)
+    \item Macro F1: 0.079 → 0.143 (+81\% relative)
+    \item Label adherence: 80.6\% → 98.8\%
+\end{itemize}
+
+The label adherence gap is particularly notable — Llama follows the constrained label list far more reliably than Qwen under the same prompt. This suggests that Llama's instruction tuning produces stronger constraint-following behaviour. Despite identical parameter count ($\approx$8B), the two models differ substantially in capability for this task.
+
+\subsection{Micro F1 vs.\ Macro F1}
+
+The gap between Micro and Macro F1 reveals class imbalance effects. WikiEvents unconstrained Qwen achieves Micro F1 = 0.128 but Macro F1 = 0.043. The model performs well on the most frequent types (\texttt{Conflict.Attack}: 0.439--0.472) but scores zero on rare types, pulling the macro average down sharply. Macro F1 is the more honest measure of generalisation across the ontology.
+
+\subsection{Fuzzy Match vs.\ Exact Match}
+
+Fuzzy trigger match provides a small but consistent gain over exact match (e.g.\ Llama: 0.330 exact vs.\ 0.348 fuzzy), indicating some near-miss predictions where the model predicts a morphological variant of the correct trigger (e.g.\ \textit{kills} vs.\ \textit{killed}). For type matching, fuzzy and exact scores are nearly identical across all conditions — type errors are categorical wrong choices, not spelling near-misses, confirming that the primary challenge is ontology alignment rather than string formatting.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Error Analysis}
@@ -386,6 +429,11 @@ Y.\ Ma et al.
 T.\ H.\ Nguyen and R.\ Grishman.
 \newblock Event detection and domain adaptation with convolutional neural networks.
 \newblock In \textit{Proceedings of ACL}, 2015.
+
+\bibitem{llama3}
+A.\ Dubey et al.
+\newblock The Llama 3 herd of models.
+\newblock \textit{arXiv preprint arXiv:2407.21783}, 2024.
 
 \bibitem{qwen2025}
 Qwen Team.

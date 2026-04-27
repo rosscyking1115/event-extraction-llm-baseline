@@ -13,20 +13,28 @@ RESULTS_DIR = "/mnt/parscratch/users/acp25ck/team-rg1/results"
 # Define all known experiments in display order
 EXPERIMENTS = [
     {
-        "label": "MAVEN unconstrained",
+        "label": "MAVEN unconstrained (Qwen-7B)",
         "file":  "maven_qwen_eval_results.jsonl",
     },
     {
-        "label": "MAVEN constrained",
+        "label": "MAVEN constrained (Qwen-7B)",
         "file":  "maven_qwen_eval_constrained_results.jsonl",
     },
     {
-        "label": "WikiEvents unconstrained",
+        "label": "WikiEvents unconstrained (Qwen-7B)",
         "file":  "wikievents_qwen_eval_results.jsonl",
     },
     {
-        "label": "WikiEvents constrained",
+        "label": "WikiEvents constrained (Qwen-7B)",
         "file":  "wikievents_qwen_eval_constrained_results.jsonl",
+    },
+    {
+        "label": "WikiEvents few-shot (Qwen-7B)",
+        "file":  "wikievents_qwen_fewshot_results.jsonl",
+    },
+    {
+        "label": "WikiEvents constrained (Llama-3.1-8B)",
+        "file":  "wikievents_meta_llama_llama_3.1_8b_instruct_constrained_results.jsonl",
     },
 ]
 
@@ -63,12 +71,12 @@ def compute_metrics(rows):
     }
 
 # ── Print table ───────────────────────────────────────────────────────────────
-col_w = 26
-print("\n" + "="*85)
+col_w = 38
+print("\n" + "="*97)
 print("EXPERIMENT COMPARISON TABLE")
-print("="*85)
+print("="*97)
 print(f"{'Experiment':<{col_w}} {'Samples':>8}  {'Valid JSON':>10}  {'Trigger':>8}  {'Type':>8}  {'Both':>8}")
-print("-"*85)
+print("-"*97)
 
 for exp in EXPERIMENTS:
     path = os.path.join(RESULTS_DIR, exp["file"])
@@ -88,7 +96,7 @@ for exp in EXPERIMENTS:
         f"{m['both']:>8.3f}"
     )
 
-print("="*85)
+print("="*97)
 print("\nMetrics: exact match accuracy (trigger word, event type, both combined)\n")
 
 # ── Per-type breakdown for WikiEvents ─────────────────────────────────────────
