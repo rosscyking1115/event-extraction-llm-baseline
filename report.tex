@@ -12,6 +12,7 @@
 \usepackage{caption}
 \usepackage{listings}
 \usepackage{multirow}
+\usepackage{array}
 
 \hypersetup{
     colorlinks=true,
@@ -23,8 +24,8 @@
 \titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
 \titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
 
-\title{\textbf{Zero-Shot Event Extraction with Large Language Models:\\
-A Baseline Study on MAVEN and WikiEvents}}
+\title{\textbf{LLM-Based Event Template Filling:\\
+A Baseline Study on MUC-4 and MUC-6}}
 
 \author{
     Ross Feng\\
@@ -39,73 +40,136 @@ A Baseline Study on MAVEN and WikiEvents}}
 \maketitle
 
 \begin{abstract}
-We evaluate whether large language models (LLMs) can perform event extraction with no task-specific training, using structured prompt engineering alone. Using \textbf{Qwen2.5-7B-Instruct} and \textbf{Llama-3.1-8B-Instruct}, we run zero-shot and few-shot inference on two benchmarks: MAVEN, a large-scale event detection dataset, and WikiEvents (NAACL 2021), a richer document-level event extraction benchmark. We compare six experimental conditions across three prompting strategies and two model families, evaluating with exact match, fuzzy string matching (Levenshtein distance), hierarchical partial credit, and micro/macro F1. Results show that constrained-label prompting and few-shot examples both improve type classification substantially, and that Llama-3.1-8B outperforms Qwen2.5-7B on all metrics despite identical parameter count. Multi-event sentence ambiguity and ontology misalignment remain the dominant failure modes across all conditions. All code, results, and slot-level evaluation templates are available at \url{https://github.com/rosscyking1115/event-extraction-llm-baseline}.
+We evaluate whether instruction-tuned large language models (LLMs) can fill structured event templates from news text without any task-specific fine-tuning. Using \textbf{Qwen2.5-7B-Instruct} and \textbf{Llama-3.1-8B-Instruct}, we run zero-shot and few-shot inference on two classic MUC shared task datasets: MUC-4 (terrorism template filling, 23 slots) and MUC-6 (corporate succession template filling, 9 slots). We evaluate using a four-layer scoring framework — JSON validity, schema validity, exact match, and fuzzy Levenshtein match — reporting micro and macro F1 against empty and majority class baselines. On MUC-4, the best model condition (Llama few-shot) achieves Micro F1 of 0.164 (strict) and 0.186 (fuzzy), below the majority baseline of 0.237, which benefits from categorical slots that are trivially predictable. On MUC-6, Llama zero-shot achieves Micro F1 of 0.238, outperforming MUC-4 results substantially. Few-shot prompting reduces schema errors dramatically (from 16\% to 1\%) but provides only modest gains in slot-filling accuracy. The dominant failure mode across all conditions is hallucinating incorrect entity mentions in open-text slots. All code is available at \url{https://github.com/rosscyking1115/event-extraction-llm-baseline}.
 \end{abstract}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Introduction}
 
-Event extraction is the task of identifying event triggers and their types in natural language text. Traditional approaches rely on supervised models trained on annotated corpora~\cite{ahn2006stages,li2013joint}. With the advent of capable instruction-tuned LLMs, an important question arises: \textit{can a general-purpose LLM perform event extraction without any task-specific fine-tuning?}
+Information extraction (IE) is one of the foundational tasks in natural language processing. At its most structured form, IE requires filling predefined templates from free text — identifying not just \textit{that} an event occurred, but \textit{who} did it, \textit{where}, \textit{when}, and with what consequences. The MUC (Message Understanding Conference) shared tasks, run between 1987 and 1997, defined this template-filling paradigm and produced the benchmark datasets that shaped IE research for decades~\cite{sundheim1992muc,grishman1996muc6}.
 
-This report presents a systematic LLM baseline study for event extraction. We investigate three core questions:
+Modern large language models (LLMs), trained on vast corpora and fine-tuned for instruction following, represent a qualitatively different approach to this problem. Rather than learning extraction patterns from annotated examples, these models apply broad world knowledge and language understanding to fill structured templates from scratch. However, MUC-style template filling poses challenges that differ from the kind of generation tasks these models excel at: the output must exactly match a predefined schema, values must be grounded in the document rather than inferred, and multi-slot templates require coherent extraction across many fields simultaneously.
+
+This report investigates three research questions:
 \begin{enumerate}
-    \item How accurately can instruction-tuned LLMs identify event triggers and types with no in-context examples?
-    \item Does providing the model with a constrained label list or few-shot examples improve performance, and by how much?
-    \item Does model family matter — do Qwen2.5-7B and Llama-3.1-8B exhibit different strengths and failure modes?
+    \item Can instruction-tuned LLMs fill MUC-style event templates without any fine-tuning, producing valid and schema-compliant JSON output?
+    \item How does prompting strategy — zero-shot versus few-shot — affect slot-filling accuracy and schema adherence?
+    \item How do Qwen2.5-7B-Instruct and Llama-3.1-8B-Instruct compare across two structurally different MUC tasks?
 \end{enumerate}
 
-We experiment on two datasets of increasing complexity: MAVEN~\cite{wang2020maven}, which focuses on event detection, and WikiEvents~\cite{li2021document}, which includes richer event argument structure and a three-level type hierarchy. Across six experimental conditions — including a rule-based majority-class lower bound — we find that constrained prompting and few-shot examples both provide meaningful improvements, that Llama outperforms Qwen despite identical scale, and that multi-event sentence ambiguity is the single largest failure mode regardless of model or prompting strategy.
+We situate this work within a broader preliminary study that also explored trigger-detection baselines on MAVEN and WikiEvents; those results serve as background context (Section~\ref{sec:preliminary}) and motivated the shift to slot-filling evaluation on the more structured MUC benchmarks.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Background and Related Work}
+\label{sec:background}
 
-\subsection{Event Extraction}
+\subsection{MUC Shared Tasks}
 
-Event extraction encompasses two subtasks: \textit{trigger detection} (identifying the word or phrase that most clearly expresses an event) and \textit{event classification} (assigning the trigger to a predefined event type from an ontology). Full event extraction additionally requires identifying \textit{event arguments} — the entities involved in each event and their roles.
+The Message Understanding Conferences (MUC) were organised by DARPA to benchmark information extraction systems on real news text. MUC-3 and MUC-4~\cite{sundheim1992muc} focused on terrorism events from Latin American newswires, requiring systems to fill a 23-slot template for each detected event. MUC-6~\cite{grishman1996muc6} shifted to Wall Street Journal articles and a corporate succession template covering who moved into or out of which executive role at which organisation. These datasets established the core evaluation methodology of the field: template-level precision, recall, and F1 computed over individual slot values.
 
-Early systems used feature-based classifiers~\cite{ahn2006stages}. Neural approaches improved substantially~\cite{nguyen2015event,yang2019exploring}, and recent work uses generative models for end-to-end extraction~\cite{li2021document,lu2021text2event}.
+Classic MUC-4 systems achieved Micro F1 in the range of 0.40--0.55 using rule-based and early neural approaches~\cite{sundheim1992muc}. These systems were engineered specifically for the domain and had access to the training corpus. Our zero-shot LLM baselines should therefore be interpreted as lower bounds relative to supervised systems, not competitive benchmarks.
 
-\subsection{Zero-Shot LLMs for IE}
+\subsection{LLMs for Information Extraction}
 
-Several recent works have explored zero-shot and few-shot prompting for information extraction tasks~\cite{wei2023zero,ma2023large}. These studies generally find that LLMs perform well on high-level classification but struggle with fine-grained ontology alignment and exact span matching — findings that are consistent with our results.
+Recent work has demonstrated that instruction-tuned LLMs can perform zero-shot information extraction across a range of tasks. \citet{wei2023zero} showed that ChatGPT can extract entities and relations from text with no labelled examples, approaching supervised baselines on some benchmarks. \citet{ma2023large} found that LLMs perform better as rerankers than direct extractors on hard samples. For event extraction specifically, \citet{gao2023exploring} found that GPT-4 achieves near-supervised performance on ACE 2005 with chain-of-thought prompting.
+
+MUC-style slot filling presents additional challenges compared to trigger detection or named entity recognition: the model must simultaneously handle schema compliance, multi-slot coherence, null-value decisions (when a slot is genuinely inapplicable), and multi-template scenarios where a single document describes multiple events.
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Datasets}
+\section{Preliminary Experiments}
+\label{sec:preliminary}
+
+Before adopting the MUC evaluation framework, we conducted preliminary experiments on event trigger detection using MAVEN~\cite{wang2020maven} and WikiEvents~\cite{li2021document}. These are summarised briefly here to provide context for the evaluation design choices made in the main experiments.
 
 \subsection{MAVEN}
 
-MAVEN~\cite{wang2020maven} is a large-scale event detection dataset covering 168 event types from Wikipedia documents. Each instance is a sentence containing one or more event triggers. We use the training split for evaluation, randomly sampling 50 instances.
-
-\textbf{Why MAVEN may understate model capability:} MAVEN is primarily an event detection benchmark and does not include full argument structure. Many sentences contain multiple plausible triggers, making exact-match evaluation difficult. We use MAVEN as a starting baseline and transition to WikiEvents for richer evaluation.
+MAVEN is a large-scale event detection dataset covering 168 event types from Wikipedia. On 50 sampled instances, Qwen2.5-7B-Instruct achieved trigger exact match of 0.160 (unconstrained) and 0.220 (constrained-label prompting), with type accuracy of 0.000 and 0.280 respectively. The 0.000 unconstrained type accuracy reflects a fundamental ontology mismatch: the model generates semantically plausible type strings that do not match MAVEN's exact label vocabulary. Constraining the label space to the 168 valid types resolves this.
 
 \subsection{WikiEvents}
 
-WikiEvents~\cite{li2021document} is the standard benchmark for document-level event extraction from the NAACL 2021 paper \textit{Document-Level Event Argument Extraction by Conditional Generation}. It contains 246 annotated documents across a three-level ontology with 49 unique event types. We evaluate on the development split (20 documents, 345 event mentions).
+WikiEvents covers document-level event argument extraction across a three-level type hierarchy. On the development split (345 event mentions), trigger exact match reached 0.272--0.330 (Qwen vs Llama) with constrained prompting. Few-shot prompting improved type label adherence from 80.6\% to 97.4\%, confirming that worked examples help maintain ontology alignment. The dominant failure mode was multi-event sentence ambiguity: when a single sentence describes both an attack and a resulting death, the model frequently attaches to the more salient event rather than the gold-annotated one.
 
-Key statistics for the development split are shown in Table~\ref{tab:wikievents_stats}.
+\subsection{Motivation for MUC Evaluation}
+
+These preliminary results led us to adopt the MUC framework for the main study. MUC-style slot filling offers two advantages over trigger detection: (1) the evaluation is over \textit{structured templates} rather than individual trigger spans, making it more representative of real IE use cases; (2) the professor-recommended four-layer evaluation framework provides richer diagnostic signal — JSON validity, schema validity, exact match, and fuzzy match — than binary exact match alone.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Datasets}
+\label{sec:datasets}
+
+\subsection{MUC-4 (Terrorism Template Filling)}
+
+MUC-4~\cite{sundheim1992muc} contains terrorism news articles from Latin American newswires, with gold templates annotating each terrorism event described in the article. Each template covers 23 slots (Table~\ref{tab:muc4_slots}).
 
 \begin{table}[h]
 \centering
-\caption{WikiEvents development split statistics.}
-\label{tab:wikievents_stats}
-\begin{tabular}{lr}
+\caption{MUC-4 slot schema (23 slots). Categorical slots have a fixed value set; string slots are open-text entity mentions.}
+\label{tab:muc4_slots}
+\small
+\begin{tabular}{ll}
 \toprule
-\textbf{Statistic} & \textbf{Value} \\
+\textbf{Slot} & \textbf{Type} \\
 \midrule
-Documents & 20 \\
-Event mentions & 345 \\
-Events with arguments & 291 (84.5\%) \\
-Total arguments & 484 \\
-Unique full event types & 49 \\
-Top-level categories & 13 \\
+INCIDENT\_TYPE & Categorical (ATTACK, BOMBING, KIDNAPPING, ARSON, ASSASSINATION, ROBBERY, FORCED WORK STOPPAGE) \\
+INCIDENT\_STAGE & Categorical (ATTEMPTED, ACCOMPLISHED) \\
+INCIDENT\_DATE & String (date expression) \\
+INCIDENT\_LOCATION & String (place name) \\
+INCIDENT\_INSTRUMENT\_TYPE & String (weapon/device type) \\
+INCIDENT\_INSTRUMENT\_ID & String (weapon/device name) \\
+PERP\_INCIDENT\_CATEGORY & Categorical (TERRORIST ACT, STATE-SPONSORED VIOLENCE) \\
+PERP\_INDIVIDUAL\_ID & String (individual perpetrator name) \\
+PERP\_ORGANIZATION\_ID & String (organisation name) \\
+PERP\_ORGANIZATION\_CONFIDENCE & Categorical \\
+PHYS\_TGT\_TYPE & String (type of physical target) \\
+PHYS\_TGT\_ID & String (name of physical target) \\
+PHYS\_TGT\_NUM & String (number of targets) \\
+PHYS\_TGT\_EFFECT & Categorical (DESTROYED, SOME DAMAGE, NO DAMAGE, UNKNOWN) \\
+PHYS\_TGT\_FOREIGNNATION & Categorical \\
+HUM\_TGT\_NAME & String (victim name) \\
+HUM\_TGT\_DESCRIPTION & String (victim description) \\
+HUM\_TGT\_NUM & String (number of victims) \\
+HUM\_TGT\_TYPE & Categorical (CIVILIAN, GOVERNMENT OFFICIAL, MILITARY, etc.) \\
+HUM\_TGT\_NATIONALITY & Categorical \\
+HUM\_TGT\_EFFECT & Categorical (DEATH, INJURY, NO INJURY) \\
+HUM\_TGT\_FOREIGN\_NATION & Categorical \\
+COMMENT & String (free text note) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-WikiEvents event types follow a three-level hierarchy (e.g.\ \texttt{Conflict.Attack.DetonateExplode}), making type classification substantially harder than MAVEN's flat label space.
+We use two official test splits: \textbf{TST3} (100 documents, 69 with events, 123 gold templates) and \textbf{TST4} (100 documents, 57 with events, 86 gold templates). For few-shot experiments, two example documents with events are drawn from TST4 when evaluating TST3, to avoid data leakage.
+
+\subsection{MUC-6 (Corporate Succession Template Filling)}
+
+MUC-6~\cite{grishman1996muc6} uses Wall Street Journal articles and focuses on corporate succession events — instances of named individuals entering or leaving named executive positions at named organisations. The template schema has 9 flat slots (Table~\ref{tab:muc6_slots}).
+
+\begin{table}[h]
+\centering
+\caption{MUC-6 slot schema (9 slots).}
+\label{tab:muc6_slots}
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Slot} & \textbf{Description} \\
+\midrule
+succession\_org & Organisation where succession occurred \\
+post & Executive position/title \\
+person\_in & Person taking the position \\
+person\_out & Person leaving the position \\
+vacancy\_reason & Reason for vacancy (REASSIGNMENT, NEW\_POST\_CREATED, DEPART\_WORKFORCE, OTH\_UNK) \\
+on\_the\_job\_in & Whether the incoming person is already in post \\
+on\_the\_job\_out & Whether the outgoing person is still in post \\
+other\_org\_in & Organisation the incoming person came from \\
+rel\_other\_org\_in & Relationship type to other\_org\_in \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The test set contains 100 documents, 53 with at least one succession event, and 240 total succession events. Vacancy reasons are distributed as: REASSIGNMENT (123), OTH\_UNK (73), NEW\_POST\_CREATED (29), DEPART\_WORKFORCE (15).
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Methodology}
+\label{sec:methodology}
 
 \subsection{Models}
 
@@ -115,325 +179,230 @@ We evaluate two open-weight instruction-tuned models:
 
 \textbf{Llama-3.1-8B-Instruct}~\cite{llama3}: 8 billion parameters, trained by Meta AI with a different pretraining corpus and instruction tuning pipeline.
 
-Both models run on a single NVIDIA A100-SXM4-80GB GPU (Sheffield Stanage HPC) in \texttt{float16} precision with greedy decoding. No fine-tuning is performed on either model.
+Both models run on a single NVIDIA A100 GPU (Sheffield Stanage HPC) in \texttt{float16} precision with greedy decoding. No fine-tuning is performed.
 
-\subsection{Task Formulation}
+\subsection{Prompt Design}
 
-For each event mention, we extract the containing sentence and prompt the model to output a JSON object with two fields:
-\begin{itemize}
-    \item \texttt{trigger}: the word or phrase most clearly expressing the event
-    \item \texttt{event\_type}: the event type label (flat for MAVEN; three-level hierarchy for WikiEvents)
-\end{itemize}
+For each document, we construct a prompt that includes: (1) a task description explaining the slot-filling objective; (2) the complete slot schema with descriptions and valid values for categorical slots; (3) the document text; and (4) an instruction to output a single JSON object (MUC-4) or a JSON array of objects (MUC-6, for multi-event documents).
 
-\subsection{Prompting Strategies}
+For \textbf{zero-shot prompting}, the prompt contains no extraction examples. For \textbf{few-shot prompting}, we prepend two complete worked examples — document text, prompt, and gold template output — before the target document. Examples are drawn from a held-out split to prevent data leakage.
 
-We compare four prompting strategies on WikiEvents and two on MAVEN:
+A key design decision is to include all slot names and valid categorical values in the prompt. This provides the model with the full schema in context, allowing it to produce correctly-keyed JSON without prior knowledge of the MUC ontology.
 
-\textbf{Unconstrained zero-shot:} The prompt explains the output format and shows example type hierarchies but does not enumerate valid labels. The model must generate event types freely.
+\subsection{Four-Layer Evaluation Framework}
 
-\textbf{Constrained-label zero-shot:} The prompt explicitly lists all valid event type labels (49 for WikiEvents, 168 for MAVEN). The model is instructed to select only from this list.
+We evaluate each prediction through four sequential layers, following the framework specified for this project:
 
-\textbf{Few-shot constrained:} Extends the constrained prompt with three worked examples drawn from the training split, covering Conflict, Life, and Contact event categories. Examples demonstrate the expected trigger and type format.
+\begin{enumerate}
+    \item \textbf{JSON validity.} Does the model output parse as valid JSON? Invalid JSON is counted as a complete failure for all slots.
+    \item \textbf{Schema validity.} Does the parsed JSON contain all required slot keys? Missing keys are counted as \texttt{schema\_error} for those slots.
+    \item \textbf{Exact match.} After normalisation, do the gold and predicted values match exactly?
+    \item \textbf{Fuzzy match.} Does the normalised Levenshtein similarity meet the threshold $\geq 0.8$?
+\end{enumerate}
 
-\textbf{Rule-based majority-class baseline:} Always predicts the most frequent event type from the training split (\texttt{Conflict.Attack.DetonateExplode}) and the most frequent trigger word (\texttt{killed}). This establishes a lower-bound floor against which LLM results are compared.
+\textbf{Normalisation} applies the following transformations before comparison: lowercase, strip surrounding whitespace and quotes, collapse multiple spaces, and standardise date separator characters.
 
-\subsection{Evaluation}
-
-We use a multi-level evaluation framework covering exact match, fuzzy match, and F1 scoring.
-
-\textbf{Exact match} is the strictest metric: the predicted string must exactly equal the gold label (case-insensitive). We report exact match for both trigger and type slots.
-
-\textbf{Fuzzy match (Levenshtein similarity)} measures approximate string closeness. The normalised Levenshtein similarity between strings $s_1$ and $s_2$ is:
+\textbf{Levenshtein similarity} between strings $s_1$ and $s_2$ is computed as:
 \[
 \text{sim}(s_1, s_2) = 1 - \frac{\text{lev}(s_1, s_2)}{\max(|s_1|, |s_2|)}
 \]
-where $\text{lev}$ is the edit distance (number of character insertions, deletions, or substitutions). A fuzzy match is declared when similarity $\geq 0.8$. This captures near-misses such as \textit{killed} vs \textit{kills} (similarity 0.83) that exact match penalises unfairly.
+where $\text{lev}$ is the character-level edit distance. A fuzzy match is declared at similarity $\geq 0.8$, capturing near-misses such as name abbreviations or minor spelling variants.
 
-\textbf{Hierarchical partial credit} applies to WikiEvents' three-level type hierarchy. Rather than binary correctness, we award:
-\begin{itemize}
-    \item 1.0 — exact match (\texttt{Life.Die.Unspecified} = \texttt{Life.Die.Unspecified})
-    \item 0.67 — correct Category and SubType (\texttt{Life.Die.*} predicted as \texttt{Life.Die.Unspecified})
-    \item 0.33 — correct Category only (\texttt{Life.*} predicted as \texttt{Life.Die.Unspecified})
-    \item 0.0 — wrong Category entirely
-\end{itemize}
+\subsection{TP/FP/FN Rules}
 
-\textbf{Precision, Recall, and F1} are computed per slot. For trigger and type independently:
-\[
-\text{Precision} = \frac{TP}{TP+FP}, \quad \text{Recall} = \frac{TP}{TP+FN}, \quad F_1 = \frac{2 \cdot P \cdot R}{P + R}
-\]
+We define true positives, false positives, and false negatives using six cases (Table~\ref{tab:scoring_rules}). The null-null case (both gold and predicted are null/absent) is excluded from all counts, since predicting that a slot has no value when it genuinely has none provides no extraction signal.
 
-\textbf{Micro F1} aggregates TP, FP, FN counts across all instances before computing F1 — giving more weight to frequent event types.
+\begin{table}[h]
+\centering
+\caption{TP/FP/FN scoring rules for strict (exact match) and fuzzy scoring.}
+\label{tab:scoring_rules}
+\begin{tabular}{clllll}
+\toprule
+\textbf{Case} & \textbf{Gold} & \textbf{Predicted} & \textbf{Strict} & \textbf{Fuzzy} \\
+\midrule
+1 & null  & null  & not counted & not counted \\
+2 & value & value (exact match)  & TP & TP \\
+3 & value & value (fuzzy match only) & FP + FN & TP \\
+4 & value & value (no match) & FP + FN & FP + FN \\
+5 & value & null  & FN & FN \\
+6 & null  & value & FP & FP \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\textbf{Macro F1} computes F1 per event type class, then averages across all classes — treating rare and frequent types equally. Macro F1 is the more informative metric when the type distribution is skewed.
+\subsection{Metrics}
 
-\textbf{Slot-level evaluation template:} Every prediction is recorded as a structured row with fields for gold and predicted values, Levenshtein similarity, fuzzy match flag, partial credit score, and exact match flag for each slot. Full templates are saved as TSV files in the results directory.
+\textbf{Micro F1} aggregates all TP, FP, and FN counts across all slots and documents before computing precision, recall, and F1. This weights each slot prediction equally and tends to be driven by frequent slots.
 
-We deliberately avoid BERTScore. Event extraction requires ontology-correct labels — a prediction of \texttt{Life.Injure} when the gold is \texttt{Life.Die} is wrong regardless of semantic proximity, and semantic similarity would unfairly reward such errors.
+\textbf{Macro F1} computes F1 per slot type separately, then averages across all slot types. This treats rare and frequent slots equally and is more informative when the slot distribution is skewed.
+
+Both metrics are computed for strict (exact match) and fuzzy (Levenshtein $\geq 0.8$) matching.
+
+\subsection{Baselines}
+
+We compute two baselines that require no model inference:
+
+\textbf{Empty baseline:} Predicts \texttt{null} for every slot. This achieves Micro F1 = 0.000 by definition, serving as the absolute lower bound.
+
+\textbf{Majority baseline:} For categorical slots, predicts the most frequent gold value seen in the test set (computed in a single pass, so it is technically a gold-informed baseline). For string slots, predicts \texttt{null}. This isolates how much of the F1 score is achievable purely from class frequency on categorical slots.
+
+\subsection{Error Taxonomy}
+
+Every slot prediction is assigned one of 13 error categories: \texttt{correct}, \texttt{missing\_slot}, \texttt{hallucinated\_slot}, \texttt{wrong\_argument}, \texttt{wrong\_event\_type}, \texttt{partial\_entity}, \texttt{over\_specific}, \texttt{under\_specific}, \texttt{date\_format}, \texttt{invalid\_json}, \texttt{schema\_error}, \texttt{multiple\_values\_error}, \texttt{event\_boundary\_error}.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
+\label{sec:results}
 
-\subsection{Main Results}
+\subsection{MUC-4 TST3 — Main Results}
 
-Table~\ref{tab:main_results} presents the full results across all six experimental conditions using exact match, fuzzy match, and F1 metrics.
+Table~\ref{tab:muc4_results} presents results across all model conditions on MUC-4 TST3.
 
 \begin{table}[h]
 \centering
-\caption{Main results across all experiments. Trig = trigger slot, Type = event type slot.}
-\label{tab:main_results}
-\begin{tabular}{llccccccc}
+\caption{MUC-4 TST3 results ($n=100$ documents, 123 gold templates). Strict = exact match after normalisation. Fuzzy = Levenshtein similarity $\geq 0.8$.}
+\label{tab:muc4_results}
+\begin{tabular}{llccc}
 \toprule
-\textbf{Model} & \textbf{Condition} & \textbf{N} & \textbf{Trig Exact} & \textbf{Trig Fuzzy} & \textbf{Type Exact} & \textbf{Type PC} & \textbf{Type Macro F1} & \textbf{Both F1} \\
+\textbf{Model} & \textbf{Prompt} & \textbf{Micro F1 (strict)} & \textbf{Micro F1 (fuzzy)} & \textbf{Macro F1 (strict)} \\
 \midrule
-\multicolumn{9}{l}{\textit{MAVEN}} \\
-Qwen-7B & Unconstrained  & 50  & 0.160 & 0.160 & 0.000 & 0.000 & 0.000 & 0.000 \\
-Qwen-7B & Constrained    & 50  & 0.220 & 0.220 & 0.280 & 0.280 & 0.170 & 0.100 \\
+Empty baseline    & —         & 0.000 & 0.000 & 0.000 \\
+Majority baseline & —         & 0.237 & 0.237 & 0.073 \\
 \midrule
-\multicolumn{9}{l}{\textit{WikiEvents}} \\
-Rule-based & Majority class & 345 & — & — & — & — & — & — \\
-Qwen-7B & Unconstrained  & 345 & 0.272 & 0.281 & 0.128 & 0.200 & 0.043 & 0.067 \\
-Qwen-7B & Constrained    & 345 & 0.264 & 0.272 & 0.186 & 0.279 & 0.079 & 0.113 \\
-Qwen-7B & Few-shot       & 345 & 0.275 & 0.278 & 0.252 & 0.333 & 0.164 & 0.157 \\
-Llama-3.1-8B & Constrained & 345 & 0.330 & 0.348 & 0.293 & 0.367 & 0.143 & 0.197 \\
+Qwen2.5-7B        & Zero-shot & 0.130 & 0.155 & 0.101 \\
+Llama-3.1-8B      & Zero-shot & 0.140 & 0.158 & 0.098 \\
+Qwen2.5-7B        & Few-shot  & 0.126 & 0.159 & 0.093 \\
+Llama-3.1-8B      & Few-shot  & \textbf{0.164} & \textbf{0.186} & \textbf{0.113} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-PC = hierarchical partial credit (0.33/0.67/1.0). Macro F1 averages F1 per event type class. Rule-based baseline results are shown in Table~\ref{tab:rule_baseline}.
+All model conditions fall below the majority baseline on Micro F1. This is expected: the majority baseline trivially achieves high recall on the three categorical slots that dominate slot counts (INCIDENT\_STAGE, INCIDENT\_TYPE, PERP\_INCIDENT\_CATEGORY), while predicting null for all 20 open-text string slots. LLM conditions score more broadly across slot types, as reflected in substantially higher Macro F1 compared to the majority baseline (e.g.\ Llama few-shot: 0.113 vs 0.073).
+
+The fuzzy-to-strict gap is consistent across model conditions (roughly 0.022--0.033 points), indicating that a proportion of model predictions are correct entity mentions with minor surface variation — name abbreviations, partial titles, or alternative transliterations — that fuzzy matching recovers.
+
+\subsection{MUC-6 — Main Results}
+
+Table~\ref{tab:muc6_results} presents results on MUC-6. Only zero-shot conditions were run on MUC-6.
 
 \begin{table}[h]
 \centering
-\caption{Rule-based majority-class baseline on WikiEvents dev ($n=345$).}
-\label{tab:rule_baseline}
-\begin{tabular}{lccc}
+\caption{MUC-6 test set results ($n=100$ documents, 240 gold succession events).}
+\label{tab:muc6_results}
+\begin{tabular}{llcc}
 \toprule
-\textbf{Strategy} & \textbf{Trigger Exact} & \textbf{Type Exact} & \textbf{Both} \\
+\textbf{Model} & \textbf{Prompt} & \textbf{Micro F1 (strict)} & \textbf{Macro F1 (strict)} \\
 \midrule
-Always predict \texttt{killed} / \texttt{Conflict.Attack.DetonateExplode} & 0.122 & 0.191 & 0.000 \\
+Empty baseline    & —         & 0.000 & 0.000 \\
+Qwen2.5-7B        & Zero-shot & 0.197 & 0.189 \\
+Llama-3.1-8B      & Zero-shot & \textbf{0.238} & \textbf{0.222} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The rule-based baseline achieves non-trivial type accuracy (0.191) purely from class frequency, but zero joint accuracy. Every LLM condition substantially exceeds this on the combined trigger+type metric, confirming that LLMs add genuine extraction capability beyond majority-class prediction.
+MUC-6 results are substantially higher than MUC-4. This reflects the structural simplicity of the succession task: with 9 flat slots (compared to 23) and a clearer extraction target (a named person moving into or out of a named role), the model has fewer opportunities to hallucinate or conflate. Llama again outperforms Qwen, consistent with the MUC-4 pattern.
 
 \subsection{Effect of Prompting Strategy}
 
-Three prompting effects are visible in the WikiEvents results:
+Few-shot prompting produces mixed results. On MUC-4 TST3, Llama few-shot (+0.024 Micro F1 strict over Llama zero-shot) and Qwen few-shot (−0.004 Micro F1 strict vs Qwen zero-shot) show that in-context examples help Llama but have negligible impact for Qwen. The most consistent effect of few-shot prompting is on schema adherence: the schema error rate drops from approximately 16\% (Qwen zero-shot) to approximately 1\% (Qwen few-shot), and from 8\% (Llama zero-shot) to under 1\% (Llama few-shot). In-context examples teach the model the exact slot key names far more reliably than the schema description alone.
 
-\textbf{Constraining labels improves type accuracy} (unconstrained 0.128 → constrained 0.186). The jump reflects reduced ontology vocabulary mismatch — without constraints, Qwen produces semantically plausible but benchmark-incompatible type strings. Label adherence improved from free-form generation to 80.6\% within the valid label set under constrained prompting.
+\subsection{Model Comparison: Qwen vs.\ Llama}
 
-\textbf{Few-shot examples further improve type accuracy} (constrained 0.186 → few-shot 0.252, +35\% relative). More strikingly, label set adherence jumps from 80.6\% to 97.4\% with examples — showing that worked examples teach the model to follow the ontology format more reliably than the label list alone.
-
-\textbf{Trigger accuracy is largely unaffected by prompting strategy} (range 0.264--0.275 across Qwen WikiEvents conditions). This confirms that trigger selection and type classification are independent problems: prompt constraints help ontology alignment but not event selection under ambiguity.
-
-\subsection{Model Comparison: Qwen-7B vs.\ Llama-3.1-8B}
-
-Llama-3.1-8B outperforms Qwen-7B on every WikiEvents metric under matched conditions (both constrained zero-shot):
-
-\begin{itemize}
-    \item Trigger exact: 0.264 → 0.330 (+25\% relative)
-    \item Type exact: 0.186 → 0.293 (+57\% relative)
-    \item Type partial credit: 0.279 → 0.367 (+32\% relative)
-    \item Macro F1: 0.079 → 0.143 (+81\% relative)
-    \item Label adherence: 80.6\% → 98.8\%
-\end{itemize}
-
-The label adherence gap is particularly notable — Llama follows the constrained label list far more reliably than Qwen under the same prompt. This suggests that Llama's instruction tuning produces stronger constraint-following behaviour. Despite identical parameter count ($\approx$8B), the two models differ substantially in capability for this task.
-
-\subsection{Micro F1 vs.\ Macro F1}
-
-The gap between Micro and Macro F1 reveals class imbalance effects. WikiEvents unconstrained Qwen achieves Micro F1 = 0.128 but Macro F1 = 0.043. The model performs well on the most frequent types (\texttt{Conflict.Attack}: 0.439--0.472) but scores zero on rare types, pulling the macro average down sharply. Macro F1 is the more honest measure of generalisation across the ontology.
-
-\subsection{Fuzzy Match vs.\ Exact Match}
-
-Fuzzy trigger match provides a small but consistent gain over exact match (e.g.\ Llama: 0.330 exact vs.\ 0.348 fuzzy), indicating some near-miss predictions where the model predicts a morphological variant of the correct trigger (e.g.\ \textit{kills} vs.\ \textit{killed}). For type matching, fuzzy and exact scores are nearly identical across all conditions — type errors are categorical wrong choices, not spelling near-misses, confirming that the primary challenge is ontology alignment rather than string formatting.
+Llama-3.1-8B outperforms Qwen2.5-7B in three of four MUC-4 conditions, and in MUC-6. The largest gap is in the few-shot condition (Llama 0.164 vs Qwen 0.126, Micro F1 strict), suggesting that Llama is a better in-context learner for this structured extraction task. On zero-shot MUC-4, the gap is small (0.140 vs 0.130). On MUC-6 zero-shot, the gap is largest (0.238 vs 0.197). Across all conditions, Llama produces fewer schema errors and higher fuzzy match rates, suggesting stronger instruction-following.
 
 % ─────────────────────────────────────────────────────────────────────────────
-\section{Error Analysis}
+\section{Analysis}
+\label{sec:analysis}
 
-\subsection{MAVEN Error Analysis}
+\subsection{Majority Baseline Decomposition}
 
-Table~\ref{tab:maven_errors} shows the error breakdown for both MAVEN conditions.
+The majority baseline's strength (Micro F1 = 0.237 on MUC-4 TST3) is concentrated entirely in three categorical slots. Table~\ref{tab:majority_breakdown} shows per-slot F1 for the majority baseline.
 
 \begin{table}[h]
 \centering
-\caption{Error category breakdown — MAVEN ($n=50$ per condition).}
-\label{tab:maven_errors}
-\begin{tabular}{lrrrr}
+\caption{MUC-4 TST3 — majority baseline per-slot F1 for slots with non-zero score.}
+\label{tab:majority_breakdown}
+\begin{tabular}{lcc}
 \toprule
-\textbf{Error Category} & \multicolumn{2}{c}{\textbf{Unconstrained}} & \multicolumn{2}{c}{\textbf{Constrained}} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}
- & Count & \% & Count & \% \\
+\textbf{Slot} & \textbf{F1 (majority)} & \textbf{Predicted value} \\
 \midrule
-Correct (trigger + type)     &  0 &  0.0\% &  5 & 10.0\% \\
-Right trigger, wrong type    &  8 & 16.0\% &  6 & 12.0\% \\
-Wrong trigger, right type    &  0 &  0.0\% &  9 & 18.0\% \\
-Wrong trigger, wrong type    & 42 & 84.0\% & 30 & 60.0\% \\
+INCIDENT\_STAGE              & 0.769 & ACCOMPLISHED \\
+INCIDENT\_TYPE               & 0.544 & ATTACK \\
+PERP\_INCIDENT\_CATEGORY     & 0.372 & TERRORIST ACT \\
+All other slots (20 slots)   & 0.000 & null \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The most striking finding in the unconstrained condition is that type accuracy is exactly 0.000 — not because the model fails to understand event semantics, but because it \textit{never uses MAVEN's ontology labels}. Instead it generates its own vocabulary: \texttt{natural\_disaster}, \texttt{Natural Disaster}, \texttt{tectonic}, and in two cases the Chinese equivalent \texttt{自然灾害}. Without knowledge of the exact label strings, the model produces semantically reasonable but benchmark-incompatible outputs.
+LLMs must score above zero on the 20 string slots to surpass the majority baseline on Micro F1. The higher Macro F1 of LLM conditions (0.093--0.113 vs 0.073) confirms that they do so, extracting meaningful signal from slots like INCIDENT\_LOCATION, PERP\_INDIVIDUAL\_ID, and HUM\_TGT\_NAME.
 
-Constraining the label space transforms the error distribution substantially. The ``wrong trigger, right type'' category jumps from 0.0\% to 18.0\%, indicating that label constraints successfully guide type classification even in cases where trigger selection fails. The dominant error category (wrong trigger, wrong type) drops from 84.0\% to 60.0\%, confirming that much of MAVEN's difficulty in the unconstrained condition is ontology vocabulary mismatch rather than genuine semantic failure.
+\subsection{Slot Difficulty}
 
-The top type confusions in the constrained condition reflect the domain of the evaluated sample (earthquake/tsunami events): \texttt{Causation} $\rightarrow$ \texttt{Catastrophe} (3 cases) and \texttt{Destroying} $\rightarrow$ \texttt{Catastrophe} (2 cases) are both plausible labellings of the same physical events, highlighting the difficulty of MAVEN's fine-grained ontology distinctions.
+Categorical slots (INCIDENT\_TYPE, INCIDENT\_STAGE, HUM\_TGT\_EFFECT) are the easiest: the model simply needs to choose from a small fixed set, and including the valid values in the prompt makes this reliable. String slots involving named entities (PERP\_INDIVIDUAL\_ID, HUM\_TGT\_NAME, PHYS\_TGT\_ID) are harder because the model must locate the correct mention in the document text. DATE and LOCATION slots present intermediate difficulty, as the model generally identifies the right type of value but may extract a slightly different surface form or normalise differently from the gold.
 
-\subsection{WikiEvents Error Categories}
+\subsection{Why MUC-4 is Harder than MUC-6}
 
-Table~\ref{tab:errors} categorises all predictions from the WikiEvents constrained condition. Errors are classified by whether the trigger word and each level of the event type hierarchy are correct.
+MUC-6 produces higher F1 for three reasons. First, the succession task has a clearer extraction pattern: there is typically one person-role-organisation triple per event, and the surface form is consistent in financial news. Second, MUC-6 has 9 slots compared to MUC-4's 23, reducing opportunities for errors to compound. Third, MUC-4 documents often describe multiple distinct terrorism events that require separate templates; the model must recognise event boundaries and produce separate JSON objects for each, which is a significantly harder task than extracting a single template.
 
-\begin{table}[h]
-\centering
-\caption{Error category breakdown — WikiEvents constrained zero-shot ($n=345$).}
-\label{tab:errors}
-\begin{tabular}{lrr}
-\toprule
-\textbf{Error Category} & \textbf{Count} & \textbf{\%} \\
-\midrule
-Correct (trigger + type)                        & 39  & 11.3\% \\
-Right trigger, right Cat.Sub, wrong Specificity & 16  &  4.6\% \\
-Right trigger, right Category, wrong SubType    & 13  &  3.8\% \\
-Right trigger, wrong Category entirely          & 23  &  6.7\% \\
-Wrong trigger, right type                       & 25  &  7.2\% \\
-Wrong trigger, right Cat.Sub                    & 15  &  4.3\% \\
-Wrong trigger, right Category, wrong SubType    & 22  &  6.4\% \\
-Wrong trigger, wrong Category entirely          & 192 & 55.7\% \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{Effect of Few-Shot Examples on Schema Compliance}
 
-The dominant error category is \textit{wrong trigger, wrong category entirely} (55.7\%), indicating that the model's primary failure mode is not subtle ontology misalignment but rather selecting a fundamentally different event within the same sentence.
+The most consistent and practically significant finding is the effect of few-shot prompting on schema compliance. Without examples, models frequently make slot key naming errors — using \texttt{PERP\_ORG} instead of \texttt{PERP\_ORGANIZATION\_ID}, or omitting less salient slots entirely. With two worked examples in the prompt, the model observes the exact expected output format and replicates it reliably. This suggests that for structured extraction tasks, the primary value of few-shot examples is as a \textit{format demonstration} rather than as semantic extraction guidance.
 
-\subsection{Effect of Constraining on Error Distribution}
+\subsection{Failure Mode Analysis}
 
-Compared to unconstrained prompting, constraining labels halves the ``right trigger, wrong category'' error rate (15.4\% → 6.7\%). This confirms that label constraints provide meaningful ontology alignment. However, the most frequent error category (wrong trigger + wrong category) shifts only marginally (57.4\% → 55.7\%), indicating that this core failure is driven by trigger selection rather than type knowledge.
+The dominant failure mode across all conditions is \textbf{wrong entity value} in open-text slots — the model extracts a plausible entity from the document but not the gold-annotated one. In MUC-4, this often manifests as extracting the wrong perpetrator organisation (e.g.\ naming the ideological movement instead of the specific cell), or extracting an approximate victim count that differs from the gold. In MUC-6, the most common error is extracting the wrong person when multiple personnel changes are described in the same article.
 
-\subsection{Type Confusions}
+\textbf{Hallucination of values} (predicting a non-null value when gold is null) is the second most frequent failure, accounting for the FP component of the fuzzy-to-strict gap. The model occasionally infers entities that are consistent with the event type but not explicitly mentioned in the document.
 
-The most frequent type confusions reveal a systematic pattern: the model conflates \textit{consequence} events with \textit{cause} events. Table~\ref{tab:confusions} shows the top confusions.
-
-\begin{table}[h]
-\centering
-\caption{Top type confusions (gold $\rightarrow$ predicted), WikiEvents constrained.}
-\label{tab:confusions}
-\begin{tabular}{llr}
-\toprule
-\textbf{Gold Type} & \textbf{Predicted Type} & \textbf{Count} \\
-\midrule
-Life.Die.Unspecified       & Conflict.Attack.DetonateExplode & 14 \\
-Life.Die.Unspecified       & Conflict.Attack.Unspecified     & 12 \\
-Life.Injure.Unspecified    & Life.Injure                     &  8 \\
-Life.Die.Unspecified       & Life.Injure                     &  7 \\
-Conflict.Attack.DetonateExplode & Conflict.Attack.Unspecified &  6 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The most frequent confusion (Life.Die → Conflict.Attack.DetonateExplode, 14 cases) is explained by multi-event sentences: when a bombing kills someone, both events are linguistically present. The model attaches to the more physically salient explosion event rather than the death consequence. Eight cases of Life.Injure.Unspecified → Life.Injure indicate a \textit{format failure} rather than a semantic failure: the model predicts the correct category and subtype but drops the required third level of the hierarchy.
-
-\subsection{Qualitative Examples}
-
-\textbf{Multi-event confusion (dominant failure):}
-\begin{quote}
-\small
-\textit{Sentence:} ``Roadside IED kills Russian major general in Syria''\\
-\textit{Gold:} trigger=\texttt{kills}, type=\texttt{Life.Die.Unspecified}\\
-\textit{Predicted:} trigger=\texttt{kills}, type=\texttt{Conflict.Attack.DetonateExplode}
-\end{quote}
-The trigger is correct, but the model classifies the overall event as an attack rather than a death — plausible given the sentence content but ontologically wrong.
-
-\textbf{Trigger selection under ambiguity:}
-\begin{quote}
-\small
-\textit{Sentence:} ``Russia's Defense Ministry confirmed that a major general was killed in Syria by an IED...''\\
-\textit{Gold:} trigger=\texttt{killed}, type=\texttt{Life.Die.Unspecified}\\
-\textit{Predicted:} trigger=\texttt{confirmed}, type=\texttt{Contact.Contact.Broadcast}
-\end{quote}
-The model selects \texttt{confirmed} as the trigger, anchoring on the reporting verb rather than the actual event being described — a common failure mode in news-domain text.
-
-\textbf{Correct prediction:}
-\begin{quote}
-\small
-\textit{Sentence:} ``A local commander of Syria's National Defense Forces was also reportedly killed.''\\
-\textit{Gold:} trigger=\texttt{killed}, type=\texttt{Life.Die.Unspecified}\\
-\textit{Predicted:} trigger=\texttt{killed}, type=\texttt{Life.Die.Unspecified} ✓
-\end{quote}
-Single-event sentences with unambiguous triggers are reliably extracted.
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Discussion}
-
-\subsection{What Zero-Shot LLMs Can Do}
-
-Our results demonstrate that Qwen2.5-7B-Instruct can perform meaningful zero-shot event extraction. JSON output validity is perfect across all experiments (345/345), showing reliable instruction-following. Trigger accuracy reaches 0.272 on WikiEvents without any examples, comparable to weak supervised baselines from earlier work. The model shows genuine understanding of event semantics, as evidenced by the semantic proximity of its trigger errors (e.g.\ \textit{injured} → \textit{killed}).
-
-\subsection{Where Zero-Shot LLMs Struggle}
-
-Three failure modes account for most errors:
-
-\textbf{Multi-event sentence ambiguity.} News text routinely describes multiple co-occurring events. The model consistently selects the most salient event in the sentence rather than the gold-annotated one. This is an inherent limitation of sentence-level prompting for document-level annotations.
-
-\textbf{Ontology misalignment.} Even with constrained prompting, 19.4\% of WikiEvents predictions used types outside the provided label list. The three-level hierarchy is harder to constrain than a flat label space.
-
-\textbf{Hierarchical format adherence.} Eight cases of Life.Injure.Unspecified → Life.Injure suggest the model drops the third hierarchy level, indicating that longer, structured label strings require more explicit format enforcement in the prompt.
-
-\subsection{Implications}
-
-These results establish a clear zero-shot baseline against which fine-tuned or few-shot approaches can be compared. The gap between unconstrained and constrained accuracy (particularly on type classification) suggests that prompt engineering alone can recover substantial performance. However, the dominance of the multi-event confusion error class (55.7\%) suggests that sentence-level prompting is fundamentally limited for document-annotated benchmarks like WikiEvents.
+\textbf{Event boundary errors} affect MUC-4 more than MUC-6: when a document describes both a bombing and a kidnapping, the model sometimes merges both events into a single template rather than producing two separate predictions.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
+\label{sec:conclusion}
 
-We presented a zero-shot LLM baseline for event extraction using Qwen2.5-7B-Instruct on MAVEN and WikiEvents. Key findings:
+We presented an LLM-based template-filling baseline on MUC-4 and MUC-6 using Qwen2.5-7B-Instruct and Llama-3.1-8B-Instruct with zero-shot and few-shot prompting. Key findings are as follows.
 
-\begin{itemize}
-    \item Constrained-label prompting consistently improves type accuracy (MAVEN: 0.000 → 0.280; WikiEvents: 0.128 → 0.186)
-    \item Trigger accuracy is stronger on WikiEvents (0.272) than MAVEN (0.160), likely due to more salient event types
-    \item The dominant failure mode is multi-event sentence ambiguity, accounting for 55.7\% of all errors
-    \item Hierarchical ontologies are harder to constrain than flat label spaces, with 19.4\% of predictions falling outside the provided label set
-\end{itemize}
+All model conditions score below the majority baseline on MUC-4 Micro F1 because the majority baseline benefits from high recall on three dominant categorical slots; however, LLM conditions achieve substantially higher Macro F1 (up to 0.113 vs 0.073), reflecting their ability to extract open-text slot values that majority prediction cannot handle.
 
-Future work could explore few-shot prompting, document-level context, or fine-tuned models to address the multi-event ambiguity problem identified here.
+Few-shot prompting provides its most consistent benefit through schema compliance rather than slot-filling accuracy. Schema error rates drop from 16\% to 1\% with two in-context examples, suggesting that format demonstration is the primary function of few-shot examples in structured extraction tasks.
+
+Llama-3.1-8B outperforms Qwen2.5-7B across most conditions, with the largest gap on MUC-6 zero-shot (Micro F1 0.238 vs 0.197). MUC-6 results are substantially higher than MUC-4, attributable to the simpler schema, more consistent surface forms in financial news, and the absence of multi-event boundary decisions.
+
+The primary failure mode across all conditions is incorrect entity extraction in open-text slots, which cannot be addressed through prompt engineering alone. Fine-tuning on in-domain data, retrieval-augmented generation, or chain-of-thought decomposition are promising directions for future work. Extension to MUC-7 (rocket launch events) and full multi-template alignment would further characterise LLM capabilities on the complete MUC benchmark suite.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \bibliographystyle{plain}
 \begin{thebibliography}{99}
 
-\bibitem{ahn2006stages}
-D.\ Ahn.
-\newblock The stages of event extraction.
-\newblock In \textit{Proceedings of the Workshop on Annotating and Reasoning about Time and Events}, 2006.
+\bibitem{sundheim1992muc}
+B.\ Sundheim.
+\newblock Overview of the Fourth Message Understanding Evaluation and Conference.
+\newblock In \textit{Proceedings of the Fourth Message Understanding Conference (MUC-4)}, 1992.
+
+\bibitem{grishman1996muc6}
+R.\ Grishman and B.\ Sundheim.
+\newblock Message Understanding Conference — 6: A Brief History.
+\newblock In \textit{Proceedings of COLING}, 1996.
+
+\bibitem{gao2023exploring}
+T.\ Gao et al.
+\newblock Exploring the feasibility of ChatGPT for event extraction.
+\newblock \textit{arXiv preprint arXiv:2303.03836}, 2023.
 
 \bibitem{li2021document}
 S.\ Li, H.\ Ji, and J.\ Han.
 \newblock Document-level event argument extraction by conditional generation.
 \newblock In \textit{Proceedings of NAACL}, 2021.
 
-\bibitem{li2013joint}
-Q.\ Li and H.\ Ji.
-\newblock Incremental joint extraction of entity mentions and relations.
-\newblock In \textit{Proceedings of ACL}, 2013.
-
-\bibitem{lu2021text2event}
-Y.\ Lu et al.
-\newblock Text2Event: Controllable sequence-to-structure generation for end-to-end event extraction.
-\newblock In \textit{Proceedings of ACL}, 2021.
+\bibitem{llama3}
+A.\ Dubey et al.
+\newblock The Llama 3 herd of models.
+\newblock \textit{arXiv preprint arXiv:2407.21783}, 2024.
 
 \bibitem{ma2023large}
 Y.\ Ma et al.
 \newblock Large language model is not a good few-shot information extractor, but a good reranker for hard samples!
 \newblock In \textit{Findings of EMNLP}, 2023.
-
-\bibitem{nguyen2015event}
-T.\ H.\ Nguyen and R.\ Grishman.
-\newblock Event detection and domain adaptation with convolutional neural networks.
-\newblock In \textit{Proceedings of ACL}, 2015.
-
-\bibitem{llama3}
-A.\ Dubey et al.
-\newblock The Llama 3 herd of models.
-\newblock \textit{arXiv preprint arXiv:2407.21783}, 2024.
 
 \bibitem{qwen2025}
 Qwen Team.
@@ -449,11 +418,6 @@ X.\ Wang et al.
 X.\ Wei et al.
 \newblock Zero-shot information extraction via chatting with ChatGPT.
 \newblock \textit{arXiv preprint arXiv:2302.10205}, 2023.
-
-\bibitem{yang2019exploring}
-S.\ Yang and K.\ Mitchel.
-\newblock Exploring pre-trained language models for event extraction and generation.
-\newblock In \textit{Proceedings of ACL}, 2019.
 
 \end{thebibliography}
 
