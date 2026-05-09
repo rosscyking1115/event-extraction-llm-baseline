@@ -71,8 +71,8 @@ def parse_args():
     p.add_argument("--output_dir", required=True,
                    help="Directory to save prediction JSONL")
     p.add_argument("--prompt_type", default="zero_shot",
-                   choices=["zero_shot", "few_shot"],
-                   help="Prompting strategy")
+                   choices=["zero_shot", "few_shot", "zero_shot_v2"],
+                   help="Prompting strategy (zero_shot_v2 uses chat template + improved slot descriptions)")
     p.add_argument("--few_shot_file", default=None,
                    help="JSON file with few-shot examples (different split from data_file)")
     p.add_argument("--n_few_shot", type=int, default=2,
@@ -253,6 +253,107 @@ def build_muc4_prompt(doc_text, few_shot_examples=None):
         f"JSON output:"
     )
     return prompt
+
+
+# ---------------------------------------------------------------------------
+# MUC-4 v2 prompt  (chat-template + corrected controlled vocabulary)
+# ---------------------------------------------------------------------------
+
+MUC4_SLOT_DESCRIPTIONS_V2 = """\
+Extract the following fields from the article. For each field, use ONLY the
+listed valid values (exact wording). Use null only when the information is
+genuinely absent — if in doubt, extract it.
+
+{
+  "INCIDENT_TYPE": "ATTACK | BOMBING | ARSON | KIDNAPPING | ASSASSINATION | ROBBERY | MURDER | FORCED WORK STOPPAGE — null only if no terrorism event",
+  "INCIDENT_DATE": "Date as it appears in the text (e.g. '15 JAN 90'). null if not mentioned.",
+  "INCIDENT_LOCATION": "Country or city where the incident occurred, uppercase (e.g. EL SALVADOR, COLOMBIA: BOGOTA). null if not mentioned.",
+  "INCIDENT_STAGE": "ACCOMPLISHED (event carried out) | ATTEMPTED (foiled/failed). Extract whenever INCIDENT_TYPE is filled.",
+  "INCIDENT_INSTRUMENT_ID": "Specific weapon or device used (e.g. 'car bomb', 'pistol', 'grenade'). null if none.",
+  "INCIDENT_INSTRUMENT_TYPE": "BOMB | EXPLOSIVE | GUN | GRENADE | MINE | ROCKET | MORTAR | FIRE | VEHICLE | OTHER. null if none.",
+  "PERP_INCIDENT_CATEGORY": "TERRORIST ACT (guerrilla/rebel/extremist groups) | STATE-SPONSORED VIOLENCE (government/military perpetrators). null if unclear.",
+  "PERP_INDIVIDUAL_ID": "Name or description of individual perpetrator(s) (e.g. 'armed men', 'unidentified gunmen', 'John Doe'). null if not mentioned.",
+  "PERP_ORGANIZATION_ID": "Name of perpetrating organisation (e.g. 'Shining Path', 'FMLN', 'Medellin Cartel'). null if not mentioned.",
+  "PERP_ORG_CONFIDENCE": "SUSPECTED OR ACCUSED BY AUTHORITIES | SUSPECTED OR ACCUSED BY OTHERS | REPORTED | CLAIMED OR ADMITTED — use when PERP_ORGANIZATION_ID is filled.",
+  "PHYS_TGT_ID": "Specific name/description of physical target (e.g. 'US Embassy', 'oil pipeline', 'police car'). null if none.",
+  "PHYS_TGT_TYPE": "GOVERNMENT BUILDING | VEHICLE | UTILITY | BUSINESS | TRANSPORT | CIVILIAN VEHICLE | AIRPORT | DIPLOMATIC | MILITARY | OTHER. null if none.",
+  "PHYS_TGT_NUMBER": "Number of physical targets (as integer or text, e.g. '1', 'TWO'). null if none.",
+  "PHYS_TGT_FOREIGN_NATION": "Foreign nation associated with the physical target (e.g. 'UNITED STATES'). null if none.",
+  "PHYS_TGT_EFFECT": "SOME DAMAGE | DESTROYED | NO DAMAGE. null if no physical target.",
+  "PHYS_TGT_TOTAL_NUMBER": "Total count of physical targets affected. null if not stated.",
+  "HUM_TGT_NAME": "Full name(s) of specific human target(s) (e.g. 'Luis Carlos Galan'). null if not named.",
+  "HUM_TGT_DESCRIPTION": "Role or description of human target(s) (e.g. 'senator', 'police officer', 'businessman'). null if none.",
+  "HUM_TGT_TYPE": "CIVILIAN | GOVERNMENT OFFICIAL | MILITARY | POLICE | DIPLOMAT | FORMER GOVERNMENT OFFICIAL. null if none.",
+  "HUM_TGT_NUMBER": "Number of human targets (integer or text). null if not stated.",
+  "HUM_TGT_FOREIGN_NATION": "Foreign nation associated with the human target (e.g. 'UNITED STATES'). null if none.",
+  "HUM_TGT_EFFECT": "DEATH | INJURY | KIDNAPPING — extract whenever human targets are mentioned.",
+  "HUM_TGT_TOTAL_NUMBER": "Total count of all human casualties. null if not stated."
+}"""
+
+
+def build_muc4_prompt_v2(doc_text):
+    """
+    Build (system_message, user_message) for chat-template formatting.
+    Uses corrected controlled vocabulary and aggressive extraction instructions.
+    """
+    system = (
+        "You are an expert information extraction system for MUC-4 terrorism event analysis. "
+        "Your job is to extract ALL event information present in the article — be thorough. "
+        "Fill every slot you can support from the text. "
+        "Only use null when the information is genuinely absent from the article. "
+        "Output ONLY a valid JSON object with no explanation, no markdown fences, no extra text."
+    )
+
+    user = (
+        "Extract the MUC-4 terrorism event template from the article below.\n\n"
+        f"{MUC4_SLOT_DESCRIPTIONS_V2}\n\n"
+        f"Article:\n{doc_text[:4000]}\n\n"
+        "JSON output:"
+    )
+
+    return system, user
+
+
+def run_inference_v2(system_msg, user_msg, tokenizer, model, max_new_tokens):
+    """
+    Run inference using the tokenizer's chat template (correct for instruct models).
+    Falls back to plain concatenation if apply_chat_template is unavailable.
+    """
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user",   "content": user_msg},
+    ]
+
+    try:
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    except Exception:
+        # Fallback: plain concat
+        prompt = f"{system_msg}\n\n{user_msg}"
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=4096,
+    ).to(model.device)
+
+    input_len = inputs['input_ids'].shape[1]
+
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            temperature=1.0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    new_tokens = output_ids[0][input_len:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -452,14 +553,16 @@ def main():
         doc_id = doc['doc_id']
         text = doc.get('text', '')
 
-        # Build prompt
-        if args.dataset == "muc4":
-            prompt = build_muc4_prompt(text, few_shot_examples)
+        # Build prompt and run inference
+        if args.dataset == "muc4" and args.prompt_type == "zero_shot_v2":
+            system_msg, user_msg = build_muc4_prompt_v2(text)
+            raw_output = run_inference_v2(system_msg, user_msg, tokenizer, model, args.max_new_tokens)
         else:
-            prompt = build_muc6_prompt(text, few_shot_examples)
-
-        # Run inference
-        raw_output = run_inference(prompt, tokenizer, model, args.max_new_tokens)
+            if args.dataset == "muc4":
+                prompt = build_muc4_prompt(text, few_shot_examples)
+            else:
+                prompt = build_muc6_prompt(text, few_shot_examples)
+            raw_output = run_inference(prompt, tokenizer, model, args.max_new_tokens)
 
         # Extract prediction
         prediction = extract_prediction(raw_output, args.dataset)
