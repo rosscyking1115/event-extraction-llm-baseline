@@ -44,7 +44,7 @@ My part was prompt design, an evaluator implementing the four-layer scoring sche
 | `convert_to_eval_format.py` | Convert predictions into that evaluator's input format |
 | `muc_model_eval.py` | Zero-shot (v1 and v2) and few-shot inference with a Hugging Face causal language model |
 | `evaluate_muc.py` | My implementation of the professor's four-layer scoring scheme (JSON validity, schema validity, strict match, fuzzy match at normalised Levenshtein similarity 0.8), with micro P/R/F1, macro F1, empty and majority-class baselines (majority: MUC-4 only), and an error type for every wrong slot |
-| `run_muc_pipeline.sh` | The Stanage HPC job script for the whole sequence (see the known issues) |
+| `run_muc_pipeline.sh` | The Stanage HPC job script for the whole sequence |
 | `scripts/`, `results/` | Preliminary trigger-detection baselines on MAVEN and WikiEvents, and their outputs |
 
 The code also handles MUC-6 (corporate succession: who joined or left which post, 9 slots), and `run_muc_pipeline.sh` runs Llama-3.1-8B-Instruct as well as Qwen2.5-7B-Instruct. The report's results are for MUC-3/4 with Qwen only.
@@ -62,19 +62,18 @@ python evaluate_muc.py --predictions outputs/muc/muc4_tst3_qwen_qwen2.5_7b_instr
 python evaluate_muc.py --gold data/muc4_tst3.json --dataset muc4 --baseline majority --output_csv outputs/muc/muc4_tst3_majority_scores.csv
 ```
 
-`data/` and `outputs/` are git-ignored, so MUC-derived files stay out of commits. `run_muc_pipeline.sh` runs the same steps on Stanage, MUC-6 and both models included, but see the known issues below.
+`data/` and `outputs/` are git-ignored, so MUC-derived files stay out of commits. `run_muc_pipeline.sh` runs the same steps on Stanage, MUC-6 and both models included.
 
 ## Known issues in this code
 
-A code review after submission found defects in my evaluator, parsers and scripts. The team scores above were computed by the shared evaluator, which isn't here and which the review didn't cover. This code may still have fed them: `build_gold_labels.py` and `convert_gold_from_json.py` were written to make gold labels for that evaluator, `convert_to_eval_format.py` converts predictions for it, and nothing here records which gold file the reported runs used. No score computed by `evaluate_muc.py` is quoted here. The main defects:
+A code review after submission found defects in my evaluator, parsers and scripts. The team scores above were computed by the shared evaluator, which isn't here and which the review didn't cover. This code may still have fed them: `build_gold_labels.py` and `convert_gold_from_json.py` were written to make gold labels for that evaluator, and `convert_to_eval_format.py` converts predictions for it. The gold labels the team used came to me from teammates, and nothing here records whether they were made with these converters. No score computed by `evaluate_muc.py` is quoted here. Crashes on bad input and the pipeline's file-name bug have since been fixed; the main defects still open:
 
 - `evaluate_muc.py` scores only the first gold template in each MUC-3/4 document, so documents that describe several incidents are only partly scored.
 - It doesn't normalise answer-key notation (cross-references such as `CIVILIAN: "JESUIT PRIESTS"`, and `/` alternatives), so some correct answers can never match exactly.
 - MUC-6 events are paired greedily in file order, so the score can depend on that order.
 - Fuzzy matching at 0.8 accepts near-miss numbers and dates (`2 KILLED` against `3 KILLED`). This affects the fuzzy scores only.
 - `build_gold_labels.py` skips an answer key's continuation lines, so a slot with several answers keeps only the first. If the shared evaluator's gold labels came from it, this could affect the team scores.
-- `run_muc_pipeline.sh` stops at step 4 because steps 4 to 7 look for prediction files under the wrong names.
-- Few-shot inference doesn't check its examples. Without `--few_shot_file` it takes them from the test file itself, and if the example file is empty it runs with none while still labelling the run few-shot. The development split the pipeline uses for examples may parse empty, because the parser accepts only `-MUC4-` document ids; that is unconfirmed without the data.
+- The development split the pipeline uses for few-shot examples may parse empty, because the parser accepts only `-MUC4-` document ids (unconfirmed without the data). If it does, the parser now stops with an error, so the few-shot steps never run without examples.
 - The MAVEN "constrained" script offered the model only the event types that occur in its 50 scored samples.
 
 ## Data and licences
@@ -87,3 +86,7 @@ The files in `results/` contain sentences and gold labels from two public datase
 - **WikiEvents** (Li, Ji and Han, NAACL 2021), released by its authors through [raspberryice/gen-arg](https://github.com/raspberryice/gen-arg), whose repository is MIT-licensed.
 
 Copyright in the underlying text stays with its original sources. Cite the dataset papers if you use these files.
+
+## Licence
+
+The code is released under the [MIT licence](LICENSE). The licence doesn't cover the dataset excerpts in `results/`, which stay under their sources' terms.
