@@ -12,14 +12,14 @@ Plus TP/FP/FN counting using 5-case rules and micro/macro F1.
 
 Usage:
     python evaluate_muc.py \\
-        --predictions results/muc4_tst3_qwen_predictions.jsonl \\
+        --predictions outputs/muc4_tst3_qwen_predictions.jsonl \\
         --gold data/muc4_tst3.json \\
         --dataset muc4 \\
         --model qwen2.5-7b \\
         --prompt_id P1 \\
         --prompt_type zero_shot \\
         --member Ross \\
-        --output_csv results/muc4_tst3_qwen_scores.csv
+        --output_csv outputs/muc4_tst3_qwen_scores.csv
 
 Input formats:
     Gold JSON (from parse_muc34.py or parse_muc6.py):
@@ -46,9 +46,7 @@ import os
 import re
 import csv
 import json
-import math
 import argparse
-from pathlib import Path
 from collections import defaultdict
 
 
@@ -455,6 +453,10 @@ def evaluate_muc6(gold_data, predictions, args):
             pred_events = []
             schema_valid = False
 
+        # Non-object elements (strings, lists) carry no slot values; drop them
+        # so they can't crash scoring
+        pred_events = [e for e in pred_events if isinstance(e, dict)]
+
         gold_events = gold_doc.get('succession_events', [])
 
         if not gold_events:
@@ -617,11 +619,11 @@ def compute_summary(rows, dataset):
 def print_summary(summary, model, dataset):
     """Pretty-print the summary statistics."""
     print(f"\n{'='*60}")
-    print(f"  EVALUATION SUMMARY — {model} on {dataset.upper()}")
+    print(f"  EVALUATION SUMMARY - {model} on {dataset.upper()}")
     print(f"{'='*60}")
     print(f"\n  Micro F1 (strict exact):  P={summary['micro_p_strict']:.3f}  "
           f"R={summary['micro_r_strict']:.3f}  F1={summary['micro_f1_strict']:.3f}")
-    print(f"  Micro F1 (fuzzy ≥{FUZZY_THRESHOLD}):  P={summary['micro_p_fuzzy']:.3f}  "
+    print(f"  Micro F1 (fuzzy >={FUZZY_THRESHOLD}): P={summary['micro_p_fuzzy']:.3f}  "
           f"R={summary['micro_r_fuzzy']:.3f}  F1={summary['micro_f1_fuzzy']:.3f}")
     print(f"\n  Macro F1 (strict exact):  {summary['macro_f1_strict']:.3f}")
     print(f"  Macro F1 (fuzzy):         {summary['macro_f1_fuzzy']:.3f}")
@@ -661,9 +663,11 @@ def load_predictions(pred_file):
                 obj = json.loads(line)
             except json.JSONDecodeError as e:
                 print(f"  WARNING: Line {line_no} is not valid JSON: {e}")
-                # Record as invalid
-                if 'doc_id' in obj if isinstance(obj, dict) else False:
-                    predictions[obj['doc_id']] = None
+                # Record as invalid only if this line's own doc_id is readable
+                # (obj would still hold the previous line here)
+                id_match = re.search(r'"doc_id"\s*:\s*"([^"]+)"', line)
+                if id_match:
+                    predictions[id_match.group(1)] = None
                 continue
 
             doc_id = obj.get('doc_id') or obj.get('MESSAGE_ID')
@@ -781,7 +785,7 @@ def main():
     )
     parser.add_argument(
         "--prompt_type", default="zero_shot",
-        choices=["zero_shot", "few_shot", "chain_of_thought"],
+        choices=["zero_shot", "zero_shot_v2", "few_shot", "chain_of_thought"],
         help="Prompt type for CSV metadata"
     )
     parser.add_argument(
@@ -790,7 +794,7 @@ def main():
     )
     parser.add_argument(
         "--output_csv", default=None,
-        help="Path to output CSV file (default: auto-generated in results/)"
+        help="Path to output CSV file (default: auto-generated in outputs/)"
     )
     parser.add_argument(
         "--baseline", choices=["empty", "majority", "none"], default="none",
@@ -846,13 +850,15 @@ def main():
     # Write CSV
     if args.output_csv is None:
         split = gold_data[0]['split'] if gold_data else "test"
-        args.output_csv = (f"results/{args.dataset}_{split}_"
+        # outputs/ is git-ignored: score CSVs carry MUC gold values
+        args.output_csv = (f"outputs/{args.dataset}_{split}_"
                            f"{args.model.replace('/', '-')}_{args.prompt_id}.csv")
 
     write_csv(rows, args.output_csv)
 
-    # Save summary JSON alongside CSV
-    summary_path = args.output_csv.replace('.csv', '_summary.json')
+    # Save summary JSON alongside CSV (splitext, so a path without .csv
+    # can't make the summary overwrite the CSV)
+    summary_path = os.path.splitext(args.output_csv)[0] + '_summary.json'
     summary_out = {k: v for k, v in summary.items()
                    if not isinstance(v, dict) or k == 'error_counts'}
     summary_out['slot_f1_strict'] = summary['slot_f1_strict']

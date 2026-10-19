@@ -15,9 +15,9 @@ import os
 import re
 from collections import Counter
 
-TRAIN_FILE = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl"
-DATA_FILE  = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl"
-OUT_FILE   = "/mnt/parscratch/users/$USER/team-rg1/results/wikievents_rule_baseline_results.jsonl"
+TRAIN_FILE = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl")
+DATA_FILE  = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl")
+OUT_FILE   = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/wikievents_rule_baseline_results.jsonl")
 
 def get_sentence_text(doc, sent_idx):
     return doc['sentences'][sent_idx][1]

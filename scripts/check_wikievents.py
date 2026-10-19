@@ -1,7 +1,8 @@
+import os
 import json
 from collections import Counter
 
-DATA_FILE = '/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl'
+DATA_FILE = os.path.expandvars('/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl')
 
 def get_sentence_text(doc, sent_idx):
     # sentences[sent_idx] = [list_of_tokens, sentence_string]

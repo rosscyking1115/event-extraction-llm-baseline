@@ -17,8 +17,8 @@ import os
 from collections import defaultdict, Counter
 import math
 
-RESULTS_DIR  = "/mnt/parscratch/users/$USER/team-rg1/results"
-TEMPLATE_DIR = "/mnt/parscratch/users/$USER/team-rg1/results/templates"
+RESULTS_DIR  = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results")
+TEMPLATE_DIR = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/templates")
 
 EXPERIMENTS = [
     {

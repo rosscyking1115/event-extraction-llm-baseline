@@ -8,7 +8,7 @@ Run from ~/team-rg1:
 import json
 import os
 
-RESULTS_DIR = "/mnt/parscratch/users/$USER/team-rg1/results"
+RESULTS_DIR = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results")
 
 # Define all known experiments in display order
 EXPERIMENTS = [

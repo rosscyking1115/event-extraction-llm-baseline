@@ -30,7 +30,6 @@ Usage:
 
 import argparse
 import json
-from pathlib import Path
 
 # ── Named slot → numeric slot ID mapping (MUC-3/4 official numbering) ─────────
 # Slot 0 = MESSAGE ID (doc_id)

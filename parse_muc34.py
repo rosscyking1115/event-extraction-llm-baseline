@@ -285,6 +285,10 @@ def build_dataset(corpus_file, key_file, split_name):
 def print_stats(dataset, split_name):
     """Print summary statistics for a parsed dataset."""
     n_docs = len(dataset)
+    if n_docs == 0:
+        print(f"\n  WARNING: {split_name.upper()} parsed 0 documents; "
+              f"check the document-id pattern in parse_articles()")
+        return
     n_with_event = sum(1 for d in dataset if d['has_event'])
     n_templates = sum(d['n_templates'] for d in dataset)
 
@@ -338,6 +342,7 @@ def main():
     data_dir = Path(args.data_dir)
     corpora_dir = data_dir / "TASK" / "CORPORA"
 
+    empty_splits = []
     for split in args.splits:
         print(f"\nProcessing split: {split}")
         tar_z = corpora_dir / f"{split}.tar.Z"
@@ -375,10 +380,15 @@ def main():
                 json.dump(dataset, f, indent=2, ensure_ascii=False)
 
             print(f"  Saved {len(dataset)} documents -> {out_path}")
+            if not dataset:
+                empty_splits.append(split)
 
             if args.stats:
                 print_stats(dataset, split)
 
+    if empty_splits:
+        raise SystemExit(f"ERROR: 0 documents parsed for {', '.join(empty_splits)}; "
+                         f"check the document-id pattern in parse_articles()")
     print("\nDone.")
 
 

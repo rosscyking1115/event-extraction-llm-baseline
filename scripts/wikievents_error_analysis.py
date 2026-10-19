@@ -5,11 +5,12 @@ Run from ~/team-rg1:
     python scripts/wikievents_error_analysis.py
 """
 
+import os
 import json
 from collections import defaultdict, Counter
 
-CONSTRAINED_FILE   = "/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_eval_constrained_results.jsonl"
-UNCONSTRAINED_FILE = "/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_eval_results.jsonl"
+CONSTRAINED_FILE   = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_eval_constrained_results.jsonl")
+UNCONSTRAINED_FILE = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_eval_results.jsonl")
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 def load(path):

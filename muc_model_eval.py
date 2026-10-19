@@ -526,10 +526,18 @@ def main():
     # Load few-shot examples if needed
     few_shot_examples = None
     if args.prompt_type == "few_shot":
-        src = args.few_shot_file or args.data_file
+        # Drawing examples from the evaluation file would put test gold into the prompt
+        if not args.few_shot_file:
+            raise SystemExit("--prompt_type few_shot needs --few_shot_file (a split other than --data_file)")
+        if os.path.realpath(args.few_shot_file) == os.path.realpath(args.data_file):
+            raise SystemExit("--few_shot_file must not be the --data_file being evaluated")
+        src = args.few_shot_file
         print(f"Loading {args.n_few_shot} few-shot examples from {src}...")
         few_shot_examples = load_few_shot_examples(src, args.dataset, args.n_few_shot)
         print(f"  Loaded {len(few_shot_examples)} examples\n")
+        # With no examples the prompt silently becomes zero-shot
+        if not few_shot_examples:
+            raise SystemExit(f"No few-shot examples loaded from {src}; refusing to run a zero-shot prompt labelled few_shot")
 
     # Output path
     os.makedirs(args.output_dir, exist_ok=True)
@@ -594,10 +602,12 @@ def main():
               f"ETA={remaining/60:.1f}min")
 
         # Show prediction preview
-        if is_valid and args.dataset == "muc4":
+        if is_valid and args.dataset == "muc4" and isinstance(prediction, dict):
             itype = prediction.get('INCIDENT_TYPE', '?')
             iloc = prediction.get('INCIDENT_LOCATION', '?')
             print(f"           -> TYPE={itype}  LOC={iloc}")
+        elif is_valid and args.dataset == "muc4":
+            print(f"           -> non-object prediction ({type(prediction).__name__}); scored as schema-invalid, every gold slot a miss (FN)")
         elif is_valid and args.dataset == "muc6":
             n_events = len(prediction) if isinstance(prediction, list) else 1
             print(f"           -> {n_events} succession event(s) extracted")

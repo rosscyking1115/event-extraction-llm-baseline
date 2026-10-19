@@ -3,14 +3,14 @@
 # run_muc_pipeline.sh — Full MUC Experiment Pipeline for Sheffield Stanage HPC
 #
 # Runs the complete experiment sequence:
-#   1. Parse MUC-3/4 and MUC-6 datasets into JSON
-#   2. Run empty baseline evaluation
-#   3. Run majority class baseline evaluation
+#   1. Parse MUC-3/4 into JSON
+#   2. Parse MUC-6 into JSON
+#   3. Run empty and majority-class baseline evaluations (MUC-6: empty only)
 #   4. Run Qwen2.5-7B-Instruct (zero-shot)
 #   5. Run Qwen2.5-7B-Instruct (few-shot)
 #   6. Run Llama-3.1-8B-Instruct (zero-shot)
 #   7. Run Llama-3.1-8B-Instruct (few-shot)
-#   8. Summarise all results
+#   8. Run Qwen and Llama (zero-shot) on MUC-6
 #
 # Usage:
 #   chmod +x run_muc_pipeline.sh
@@ -158,7 +158,7 @@ if should_run 4; then
 
     for split in tst3 tst4; do
         gold="${PARSED_DATA}/muc4_${split}.json"
-        pred_file="${RESULTS_DIR}/muc4_${split}_qwen2_5_7b_instruct_zero_shot.jsonl"
+        pred_file="${RESULTS_DIR}/muc4_${split}_qwen_qwen2.5_7b_instruct_zero_shot.jsonl"
 
         python3 "${CODE_DIR}/muc_model_eval.py" \
             --dataset muc4 \
@@ -180,7 +180,7 @@ if should_run 5; then
 
     for split in tst3 tst4; do
         gold="${PARSED_DATA}/muc4_${split}.json"
-        pred_file="${RESULTS_DIR}/muc4_${split}_qwen2_5_7b_instruct_few_shot.jsonl"
+        pred_file="${RESULTS_DIR}/muc4_${split}_qwen_qwen2.5_7b_instruct_few_shot.jsonl"
 
         python3 "${CODE_DIR}/muc_model_eval.py" \
             --dataset muc4 \
@@ -203,7 +203,7 @@ if should_run 6; then
 
     for split in tst3 tst4; do
         gold="${PARSED_DATA}/muc4_${split}.json"
-        pred_file="${RESULTS_DIR}/muc4_${split}_meta_llama_llama_3_1_8b_instruct_zero_shot.jsonl"
+        pred_file="${RESULTS_DIR}/muc4_${split}_meta_llama_llama_3.1_8b_instruct_zero_shot.jsonl"
 
         python3 "${CODE_DIR}/muc_model_eval.py" \
             --dataset muc4 \
@@ -225,7 +225,7 @@ if should_run 7; then
 
     for split in tst3 tst4; do
         gold="${PARSED_DATA}/muc4_${split}.json"
-        pred_file="${RESULTS_DIR}/muc4_${split}_meta_llama_llama_3_1_8b_instruct_few_shot.jsonl"
+        pred_file="${RESULTS_DIR}/muc4_${split}_meta_llama_llama_3.1_8b_instruct_few_shot.jsonl"
 
         python3 "${CODE_DIR}/muc_model_eval.py" \
             --dataset muc4 \

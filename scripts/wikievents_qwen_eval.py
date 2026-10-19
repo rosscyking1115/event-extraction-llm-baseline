@@ -5,6 +5,7 @@ Evaluates using exact match on trigger, type, and both.
 """
 
 import json
+import os
 import re
 import time
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -12,8 +13,8 @@ import torch
 
 # ── Config ──────────────────────────────────────────────────────────────────
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-DATA_FILE  = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl"
-OUT_FILE   = "/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_eval_results.jsonl"
+DATA_FILE  = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl")
+OUT_FILE   = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_eval_results.jsonl")
 MAX_DOCS   = 50
 MAX_NEW_TOKENS = 100
 
@@ -133,7 +134,6 @@ for i, sample in enumerate(samples):
     n = i + 1
     print(f"[{n:4d}/{len(samples)}]  gold=('{sample['gold_trigger']}', {sample['gold_type']})  pred=('{pred_trigger}', {pred_type})  T={int(t_correct)} Y={int(y_correct)}")
 
-import os
 os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
 with open(OUT_FILE, 'w') as f:
     for r in results:

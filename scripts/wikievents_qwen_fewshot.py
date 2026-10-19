@@ -13,9 +13,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-TRAIN_FILE = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl"
-DATA_FILE  = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl"
-OUT_FILE   = "/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_fewshot_results.jsonl"
+TRAIN_FILE = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl")
+DATA_FILE  = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl")
+OUT_FILE   = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/wikievents_qwen_fewshot_results.jsonl")
 MAX_DOCS   = 50
 MAX_NEW_TOKENS = 100
 

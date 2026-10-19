@@ -1,9 +1,10 @@
+import os
 import json
 from pathlib import Path
 from collections import Counter
 
-V1_FILE = Path("/mnt/parscratch/users/$USER/team-rg1/results/maven_qwen_eval_results.jsonl")
-V2_FILE = Path("/mnt/parscratch/users/$USER/team-rg1/results/maven_qwen_eval_constrained_results.jsonl")
+V1_FILE = Path(os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/maven_qwen_eval_results.jsonl"))
+V2_FILE = Path(os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results/maven_qwen_eval_constrained_results.jsonl"))
 
 
 def normalize(x: str) -> str:

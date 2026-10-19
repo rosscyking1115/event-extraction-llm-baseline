@@ -23,12 +23,13 @@ parser.add_argument('--max_new_tokens', type=int, default=100)
 args = parser.parse_args()
 
 MODEL_NAME = args.model
-TRAIN_FILE = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl"
-DATA_FILE  = "/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl"
+TRAIN_FILE = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/train.jsonl")
+DATA_FILE  = os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/wikievents/dev.jsonl")
 
 # Derive output filename from model name
 model_slug = MODEL_NAME.replace('/', '_').replace('-', '_').lower()
-OUT_FILE = f"/mnt/parscratch/users/$USER/team-rg1/results/wikievents_{model_slug}_constrained_results.jsonl"
+OUT_FILE = os.path.join(os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/results"),
+                        f"wikievents_{model_slug}_constrained_results.jsonl")
 
 print(f"Model:      {MODEL_NAME}")
 print(f"Output:     {OUT_FILE}")

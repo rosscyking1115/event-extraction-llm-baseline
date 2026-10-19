@@ -94,7 +94,7 @@ def parse_object_graph(content):
                 continue
 
             # Field line: starts with 4 spaces then FIELD_NAME:
-            field_match = re.match(r'    (\w+(?:_\w+)*):\s*(.*)', raw)
+            field_match = re.match(r'    (\w+):\s*(.*)', raw)
             if field_match:
                 if current_field is not None:
                     fields[current_field] = current_values
@@ -376,6 +376,9 @@ def build_dataset(data_dir):
 def print_stats(dataset):
     """Print summary statistics for the parsed dataset."""
     n_docs = len(dataset)
+    if n_docs == 0:
+        print("\n  WARNING: parsed 0 documents")
+        return
     n_with_event = sum(1 for d in dataset if d['has_event'])
     total_events = sum(d['n_events'] for d in dataset)
 
@@ -455,6 +458,8 @@ def main():
     if args.stats:
         print_stats(dataset)
 
+    if not dataset:
+        raise SystemExit("ERROR: 0 documents parsed; check --data_dir layout")
     print("\nDone.")
 
 

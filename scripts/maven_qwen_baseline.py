@@ -1,10 +1,11 @@
+import os
 import json
 from pathlib import Path
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
-TRAIN_FILE = Path("/mnt/parscratch/users/$USER/team-rg1/data/MAVEN Event Detection/train.jsonl")
+TRAIN_FILE = Path(os.path.expandvars("/mnt/parscratch/users/$USER/team-rg1/data/MAVEN Event Detection/train.jsonl"))
 
 
 def build_prompt(sentence: str) -> str:
