@@ -1,5 +1,8 @@
 # Event template filling with open LLMs (MUC-3/4)
 
+[![CodeQL](https://github.com/rosscyking1115/event-extraction-llm-baseline/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/rosscyking1115/event-extraction-llm-baseline/actions/workflows/github-code-scanning/codeql)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=rosscyking1115_event-extraction-llm-baseline&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=rosscyking1115_event-extraction-llm-baseline)
+
 Can an open, instruction-tuned language model read a news report and fill in a fixed form about the event it describes (what happened, where, when, who did it, who or what was hit), with no fine-tuning and nothing but a prompt?
 
 The test set is MUC-3/4, a classic information-extraction benchmark from the early 1990s: news reports about terrorist incidents in Latin America, each paired with hand-filled answer forms ("templates") with 23 slots to fill. This was an MSc team project at the University of Sheffield. The code here is my part of it.
